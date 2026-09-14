@@ -1,0 +1,119 @@
+# Adobe Wine Lab — Linux target (Kubuntu-26.04)
+
+Raw read-only inventory, captured 2026-09-11 via `plink`.
+Host: `kubuntu@192.168.166.252` (kubuntu-virtualmachine).
+
+    SECTION:OS
+    Ubuntu 26.04.1 LTS
+    Linux kubuntu-virtualmachine 7.0.0-31-generic #31-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 04:26:38 UTC 2026 x86_64 GNU/Linux
+    KERNEL: 7.0.0-31-generic
+    SECTION:CPU
+    CPU(s):                                  4
+    Model name:                              AMD Ryzen 9 3900XT 12-Core Processor
+    Thread(s) per core:                      2
+    Core(s) per socket:                      2
+    Socket(s):                               1
+    Virtualisation type:                     full
+    SECTION:MEM
+                   total        used        free      shared  buff/cache   available
+    Mem:           5.8Gi       2.1Gi       1.7Gi        88Mi       2.1Gi       3.8Gi
+    Swap:          511Mi       336Ki       511Mi
+    SECTION:GPU_NVSMI
+    /usr/local/bin/nvidia-smi
+    NVIDIA GeForce RTX 3080, 595.95, 10240 MiB, 8.6
+    SECTION:GPU_LSPCI
+    4133:00:00.0 3D controller: Microsoft Corporation Basic Render Driver
+    SECTION:GPU_MODULE
+    (empty — GPU reaches the guest through dxgkrnl, not an nvidia PCI module)
+    SECTION:VULKAN
+    GPU0:
+        apiVersion         = 1.4.335
+        driverVersion      = 26.0.8
+        deviceType         = PHYSICAL_DEVICE_TYPE_CPU
+        deviceName         = llvmpipe (LLVM 21.1.8, 256 bits)
+        driverID           = DRIVER_ID_MESA_LLVMPIPE
+    SECTION:CUDA
+    (nvcc not installed)
+    /usr/local/: bin etc games include lib libexec man sbin share src
+    SECTION:GL
+    Error: unable to open display      # non-login SSH session has no DISPLAY
+    SECTION:WINE_BIN
+    (none)
+    SECTION:WINE_VER
+    bash: line 11: wine: command not found
+    SECTION:WINE_PKGS
+    (none)
+    SECTION:TOOLCHAIN
+    gcc -> gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+    g++ -> g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+    clang -> Ubuntu clang version 21.1.8 (6ubuntu1)
+    make -> GNU Make 4.4.1
+    cmake -> cmake version 4.2.3
+    ninja -> 1.13.2
+    meson -> 1.10.1
+    pkg-config -> 2.5.1
+    ccache -> ccache version 4.12.3
+    SECTION:DEBUGGERS
+    gdb -> /usr/bin/gdb
+    lldb -> /usr/bin/lldb
+    strace -> /usr/bin/strace
+    ltrace -> /usr/bin/ltrace
+    perf -> /usr/bin/perf
+    bpftrace -> /usr/bin/bpftrace
+    valgrind -> /usr/bin/valgrind
+    objdump -> /usr/bin/objdump
+    readelf -> /usr/bin/readelf
+    addr2line -> /usr/bin/addr2line
+    coredumpctl -> /usr/bin/coredumpctl
+    eu-stack -> /usr/bin/eu-stack
+    perf_event_paranoid = 4
+    core_pattern = |/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h %d %F
+    SECTION:VCS
+    git -> git version 2.53.0
+    python3 -> Python 3.14.4
+    pip3 -> pip 25.1.1 (python 3.14)
+    curl -> curl 8.18.0
+    wget -> GNU Wget 1.25.0
+    SECTION:HOME
+    (no ~/adobe-wine-lab before this session)
+    SECTION:DISK
+    /dev/sda2        98G   14G   79G  15% /
+    SECTION:SSH
+    active (ssh and sshd units)
+    SECTION:NET
+    eth0  UP  192.168.166.252/20
+    default via 192.168.160.1
+    SECTION:DKMS
+    dxgkrnl/6.18-147941806, 7.0.0-14-generic, x86_64: installed
+    dxgkrnl/6.18-147941806, 7.0.0-31-generic, x86_64: installed
+
+Additional readiness checks:
+
+    == ICD ==                       /usr/share/vulkan/icd.d/: asahi, gfxstream, intel_hasvk,
+                                    intel, lvp, nouveau, radeon, virtio  (NO nvidia_icd.json)
+    == NV LIBS ==                   libvulkan*.so (mesa loaders only); no libnvidia-vulkan*
+    LDCONFIG                        /usr/lib/wsl/lib/lib{cuda,dxcore,d3d12,d3d12core,
+                                    nvidia-encode,nvcuvid,nvoptix,nvwgf2umx,ngx,opticalflow,gpucomp}
+    == DXG ==                       /dev/dxg present; dxgkrnl loaded
+    == SESSION ==                   sddm (964), startplasma-wayland (1002), plasmashell (1309),
+                                    Xwayland :0 -auth /run/user/1000/xauth_qmqmif
+                                    /tmp/.X11-unix/X0
+    == SUDO ==                      sudo -S with the documented password works (passwordless NOPASS
+                                    after the cached credential, confirmed during setup)
+    == APT ==                       wine 10.0~repack-12ubuntu1 (universe), wine64 same,
+                                    wine-staging: (none), mingw-w64 13.0.0-2ubuntu1
+    == BUILD DEPS ==                build-essential ok, pkg-config ok;
+                                    libx11-dev, libfreetype-dev, libgnutls28-dev, libvulkan-dev,
+                                    bison, flex, libasound2-dev, libpulse-dev, libcups2-dev,
+                                    libdbus-1-dev, libfontconfig-dev, libgl1-mesa-dev, libkrb5-dev,
+                                    libodbc2, libosmesa6-dev, libsane-dev, libtiff-dev,
+                                    libudev-dev, libunwind-dev, X-extension dev pkgs  -> ALL MISSING
+    == KERNEL HEADERS ==            linux-headers-7.0.0-31-generic 7.0.0-31.31 present
+    == NETWORK ==                   dl.winehq.org 200, github.com 200
+
+Notes:
+- Desktop is **Wayland**; GUI Wine needs `DISPLAY=:0` and
+  `XAUTHORITY=/run/user/1000/xauth_qmqmif` from a non-login SSH session.
+- `perf_event_paranoid = 4` blocks unprivileged `perf`/`bpftrace` unless raised
+  (guest-only change; needs sudo).
+- No Vulkan ICD for the passthrough NVIDIA GPU → `vulkaninfo` shows llvmpipe only.

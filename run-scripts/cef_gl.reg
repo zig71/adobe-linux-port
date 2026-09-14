@@ -1,0 +1,10 @@
+Windows Registry Editor Version 5.00
+
+; Experiment: force the CEF GPU/utility children off all D3D backends so ANGLE
+; must fall back to GL/SwiftShader. Main exe untouched. Reversible: delete key.
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\Creative Cloud UI Helper.exe\DllOverrides]
+"d3d11"=""
+"d3d12"=""
+"d3d12core"=""
+"d3d9"=""
+"dxgi"=""

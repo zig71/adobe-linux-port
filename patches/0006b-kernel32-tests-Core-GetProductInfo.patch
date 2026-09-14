@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Adobe Wine Lab <lab@adobe-wine.invalid>
+Date: Sat, 12 Sep 2026 19:11:00 +0100
+Subject: [PATCH] kernel32/tests: Pin Core-edition GetProductInfo values.
+
+Windows 10 Home reports PRODUCT_CORE (101) for the 10.0 schema and
+PRODUCT_HOME_PREMIUM (3) for the 6.0 schema. Exercise that by staging
+the Core EditionId a real Home machine carries, then restoring the
+previous value.
+---
+ dlls/kernel32/tests/version.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/dlls/kernel32/tests/version.c b/dlls/kernel32/tests/version.c
+index 0000000000..2222222222 100644
+--- a/dlls/kernel32/tests/version.c
++++ b/dlls/kernel32/tests/version.c
+@@ -111,6 +111,40 @@ static void test_GetProductInfo(void)
+     /* NULL pointer is not a problem */
+     SetLastError(0xdeadbeef);
+     res = pGetProductInfo(6, 1, 0, 0, NULL);
+     ok( (!res) && (GetLastError() == 0xdeadbeef),
+         "got %ld with 0x%lx (expected FALSE with LastError untouched\n", res, GetLastError());
++
++    /* Core edition reports Core/HomePremium (verified on Windows 10 Home) */
++    {
++        HKEY hk;
++        char saved[64];
++        DWORD saved_len = sizeof(saved), type;
++        LONG save_res;
++
++        if (RegOpenKeyExA( HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
++                           0, KEY_QUERY_VALUE | KEY_SET_VALUE, &hk ))
++        {
++            win_skip( "cannot open CurrentVersion key\n" );
++            return;
++        }
++        save_res = RegQueryValueExA( hk, "EditionId", NULL, &type, (LPBYTE)saved, &saved_len );
++        if (RegSetValueExA( hk, "EditionId", 0, REG_SZ, (const BYTE *)"Core", 5 ))
++        {
++            win_skip( "cannot stage Core EditionId\n" );
++            RegCloseKey( hk );
++            return;
++        }
++        product = 0;
++        res = pGetProductInfo( 10, 0, 0, 0, &product );
++        ok( res && product == PRODUCT_CORE,
++            "got %ld and %lu (expected TRUE and PRODUCT_CORE)\n", res, product );
++        product = 0;
++        res = pGetProductInfo( 6, 0, 0, 0, &product );
++        ok( res && product == PRODUCT_HOME_PREMIUM,
++            "got %ld and %lu (expected TRUE and PRODUCT_HOME_PREMIUM)\n", res, product );
++        if (!save_res && type == REG_SZ)
++            RegSetValueExA( hk, "EditionId", 0, REG_SZ, (const BYTE *)saved, saved_len );
++        else
++            RegDeleteValueA( hk, "EditionId" );
++        RegCloseKey( hk );
++    }
+ }
+ static void test_GetVersionEx(void)
+--
+2.53.0

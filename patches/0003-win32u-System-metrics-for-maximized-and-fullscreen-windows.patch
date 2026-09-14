@@ -1,0 +1,58 @@
+From a127adb8d2df6ce1105f0d1698e9016c72d70101 Mon Sep 17 00:00:00 2001
+From: Adobe Wine Lab <lab@adobe-wine.invalid>
+Date: Sat, 12 Sep 2026 02:15:13 +0100
+Subject: [PATCH] win32u: Derive the maximized and fullscreen system metrics
+ consistently.
+
+---
+ dlls/win32u/sysparams.c | 26 +++++++++++++++++++-------
+ 1 file changed, 19 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 6ed5b77232..960a3def86 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -7073,12 +7073,18 @@ int get_system_metrics( int index )
+         NtUserSystemParametersInfo( SPI_GETNONCLIENTMETRICS, 0, &ncm, 0 );
+         return ncm.iMenuHeight + 1;
+     case SM_CXFULLSCREEN:
+-        /* see the remark for SM_CXMAXIMIZED, at least this formulation is correct */
+-        return get_system_metrics( SM_CXMAXIMIZED ) - 2 * get_system_metrics( SM_CXFRAME );
++        /* The client area of a full-screen window on the primary monitor: the
++         * screen width, since the frame overhangs off-screen. */
++        return get_system_metrics( SM_CXSCREEN );
+     case SM_CYFULLSCREEN:
+-        /* see the remark for SM_CYMAXIMIZED, at least this formulation is
+-         * correct */
+-        return get_system_metrics( SM_CYMAXIMIZED ) - get_system_metrics( SM_CYMIN );
++        /* As SM_CXFULLSCREEN, but the caption is still on-screen and so comes
++         * out of the client height.
++         * Windows 11: 768 - 23 == 745.
++         *
++         * This was derived from SM_CYMAXIMIZED minus SM_CYMIN, which produced
++         * a value larger than the screen itself (786 for a 768-high screen)
++         * once SM_CYMAXIMIZED was inflated. */
++        return get_system_metrics( SM_CYSCREEN ) - get_system_metrics( SM_CYCAPTION );
+     case SM_CYKANJIWINDOW:
+         return 0;
+     case SM_MOUSEPRESENT:
+@@ -7200,8 +7206,14 @@ int get_system_metrics( int index )
+         /* FIXME: subtract the width of any vertical application toolbars*/
+         return get_system_metrics( SM_CXSCREEN ) + 2 * get_system_metrics( SM_CXFRAME );
+     case SM_CYMAXIMIZED:
+-        /* FIXME: subtract the width of any horizontal application toolbars*/
+-        return get_system_metrics( SM_CYSCREEN ) + 2 * get_system_metrics( SM_CYCAPTION );
++        /* FIXME: subtract the height of any horizontal application toolbars.
++         *
++         * A maximized window is the screen plus the frame it overhangs on each
++         * side, exactly as for SM_CXMAXIMIZED. Using SM_CYCAPTION here made the
++         * value depend on the caption height instead of the frame, which also
++         * made it grow with anything that changed the caption.
++         * Windows 11: 768 + 2 * 8 == 784. */
++        return get_system_metrics( SM_CYSCREEN ) + 2 * get_system_metrics( SM_CYFRAME );
+     case SM_NETWORK:
+         return 3;  /* FIXME */
+     case SM_CLEANBOOT:
+-- 
+2.53.0
+

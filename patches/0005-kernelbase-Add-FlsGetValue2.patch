@@ -1,0 +1,66 @@
+From fe014282de9b21403c0e3be47a70fbae36f9c04a Mon Sep 17 00:00:00 2001
+From: Adobe Wine Lab <lab@adobe-wine.invalid>
+Date: Sat, 12 Sep 2026 03:47:18 +0100
+Subject: [PATCH] kernelbase: Add FlsGetValue2.
+
+---
+ dlls/kernel32/kernel32.spec     |  1 +
+ dlls/kernelbase/kernelbase.spec |  1 +
+ dlls/kernelbase/thread.c        | 17 +++++++++++++++++
+ 3 files changed, 19 insertions(+)
+
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index 49bdaa8f66..1eb4ad7390 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -524,6 +524,7 @@
+ @ stdcall -import FlsAlloc(ptr)
+ @ stdcall -import FlsFree(long)
+ @ stdcall -import FlsGetValue(long)
++@ stdcall -import FlsGetValue2(long)
+ @ stdcall -import FlsSetValue(long ptr)
+ @ stdcall -import FlushConsoleInputBuffer(long)
+ @ stdcall -import FlushFileBuffers(long)
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index 97e3897b3c..276b733b0e 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -388,6 +388,7 @@
+ @ stdcall FlsAlloc(ptr)
+ @ stdcall FlsFree(long)
+ @ stdcall FlsGetValue(long)
++@ stdcall FlsGetValue2(long)
+ @ stdcall FlsSetValue(long ptr)
+ @ stdcall FlushConsoleInputBuffer(long)
+ @ stdcall FlushFileBuffers(long)
+diff --git a/dlls/kernelbase/thread.c b/dlls/kernelbase/thread.c
+index 92ef073143..ba43a5a9a1 100644
+--- a/dlls/kernelbase/thread.c
++++ b/dlls/kernelbase/thread.c
+@@ -1271,6 +1271,23 @@ PVOID WINAPI DECLSPEC_HOTPATCH FlsGetValue( DWORD index )
+ }
+ 
+ 
++/***********************************************************************
++ *           FlsGetValue2   (kernelbase.@)
++ *
++ * Same lookup as FlsGetValue, but leaves the last error untouched rather than
++ * clearing it on success and setting ERROR_INVALID_PARAMETER for a bad index.
++ * Windows exports this and applications resolve it dynamically, so its absence
++ * makes GetProcAddress return NULL where Windows returns a usable function.
++ */
++PVOID WINAPI DECLSPEC_HOTPATCH FlsGetValue2( DWORD index )
++{
++    void *data;
++
++    if (!RtlFlsGetValue( index, &data )) return data;
++    return NULL;
++}
++
++
+ /***********************************************************************
+  *           FlsSetValue   (kernelbase.@)
+  */
+-- 
+2.53.0
+

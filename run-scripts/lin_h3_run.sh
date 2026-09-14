@@ -1,0 +1,69 @@
+#!/bin/bash
+# H3: full oracle-parity identity + guarded installer run.
+# Single regedit import (fast), 8G swap, 10s guard granularity.
+set -u
+export WINEPREFIX=/home/kubuntu/adobe-wine-lab/prefix-wv2
+export DISPLAY=:99
+unset XAUTHORITY
+export WINEDEBUG=-all
+W=/home/kubuntu/adobe-wine-lab/install/wine-arch/bin/wine
+
+echo "=== identity import ==="
+"$W" regedit /s /tmp/oracle_identity.reg 2>&1 | tail -2
+"$W" reg query 'HKLM\Software\Microsoft\Windows NT\CurrentVersion' 2>/dev/null | grep -E 'CurrentBuild|ProductName|Edition|UBR|Display|BuildLab'
+
+echo
+echo "=== swap ==="
+if ! swapon --show 2>/dev/null | grep -q '/swapfile8'; then
+  echo ${LAB_PW} | sudo -S -p '' fallocate -l 8G /swapfile8 2>/dev/null \
+    || echo ${LAB_PW} | sudo -S -p '' dd if=/dev/zero of=/swapfile8 bs=1M count=8192 status=none
+  echo ${LAB_PW} | sudo -S -p '' chmod 600 /swapfile8
+  echo ${LAB_PW} | sudo -S -p '' mkswap /swapfile8 >/dev/null 2>&1
+  echo ${LAB_PW} | sudo -S -p '' swapon /swapfile8
+fi
+swapon --show | head -4
+free -m | head -3
+
+echo
+echo "=== Xvfb :99 ==="
+pgrep -f 'Xvfb :99' >/dev/null || setsid Xvfb :99 -screen 0 1280x960x24 -nolisten tcp >/tmp/xvfb.log 2>&1 < /dev/null
+sleep 2
+DISPLAY=:99 xdpyinfo 2>&1 | grep dimensions || { echo XVFB_DEAD; exit 1; }
+
+OUT=/tmp/cc-h3.out
+LOG="$WINEPREFIX/drive_c/users/kubuntu/AppData/Local/Temp/CreativeCloud/ACC/WAM.log"
+SHOTS=/home/kubuntu/adobe-wine-lab/runs/cc-h3
+mkdir -p "$SHOTS"
+pkill -9 -f 'Set-Up' 2>/dev/null; pkill -9 -f 'msedgewebview2' 2>/dev/null; sleep 2
+rm -f "$OUT" "$LOG"; rm -f "$SHOTS"/*.png
+
+cd /home/kubuntu/Downloads
+setsid "$W" ./Creative_Cloud_Set-Up.exe > "$OUT" 2>&1 < /dev/null &
+SECS=${1:-150}
+for i in $(seq 1 $((SECS / 10))); do
+  sleep 10
+  n=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+  wv=$(pgrep -c -f 'msedgewebview2' 2>/dev/null || echo 0)
+  avail=$(free -m | awk '/^Mem:/{print $7}')
+  echo "t=$((i*10))s log=$n wv2=$wv avail=${avail}MB"
+  if [ "$avail" -lt 400 ]; then
+    echo "MEMORY GUARD: avail ${avail}MB < 400MB, killing installer to protect guest"
+    pkill -9 -f 'Set-Up' 2>/dev/null; pkill -9 -f 'msedgewebview2' 2>/dev/null
+    sleep 2
+    pkill -9 -f 'msedgewebview2' 2>/dev/null
+    echo "GUARD_TRIPPED"
+    break
+  fi
+done
+xwd -root -silent 2>/dev/null | convert xwd:- "$SHOTS/final.png" 2>/dev/null || true
+
+echo
+echo "=== not-supported? ==="
+tr -d '\000' < "$LOG" 2>/dev/null | grep -a 'not supported' | cut -c1-160 | head -2 || echo "(absent)"
+echo "=== workflow states ==="
+tr -d '\000' < "$LOG" 2>/dev/null | grep -aoE 'state: [A-Z_]+' | sort -u
+echo "(end)"
+echo "=== onWindowResize ==="
+tr -d '\000' < "$LOG" 2>/dev/null | grep -ac 'onWindowResize'
+free -m | head -2
+echo H3_DONE

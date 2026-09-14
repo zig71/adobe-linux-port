@@ -1,0 +1,2739 @@
+From d1a29885c022b292c67f5ca2550f18e1c0322b8a Mon Sep 17 00:00:00 2001
+From: Adobe Wine Lab <lab@adobe-wine.invalid>
+Date: Sat, 12 Sep 2026 03:28:53 +0100
+Subject: [PATCH] dcomp: Implement the device, target, visual, surface and
+ transform objects.
+
+---
+ dlls/dcomp/Makefile.in     |   8 +-
+ dlls/dcomp/dcomp.spec      |   3 +-
+ dlls/dcomp/dcomp_private.h | 253 ++++++++++++
+ dlls/dcomp/device.c        | 809 ++++++++++++++++++++++++++++++++++---
+ dlls/dcomp/guids.c         |  56 +++
+ dlls/dcomp/misc.c          | 321 +++++++++++++++
+ dlls/dcomp/surface.c       | 363 +++++++++++++++++
+ dlls/dcomp/target.c        | 496 +++++++++++++++++++++++
+ dlls/dcomp/transform.c     | 341 ++++++++++++++++
+ 9 files changed, 2601 insertions(+), 49 deletions(-)
+ create mode 100644 dlls/dcomp/dcomp_private.h
+ create mode 100644 dlls/dcomp/guids.c
+ create mode 100644 dlls/dcomp/misc.c
+ create mode 100644 dlls/dcomp/surface.c
+ create mode 100644 dlls/dcomp/target.c
+ create mode 100644 dlls/dcomp/transform.c
+
+diff --git a/dlls/dcomp/Makefile.in b/dlls/dcomp/Makefile.in
+index 3c14125a2f..88a788a7cb 100644
+--- a/dlls/dcomp/Makefile.in
++++ b/dlls/dcomp/Makefile.in
+@@ -1,6 +1,12 @@
+ MODULE    = dcomp.dll
++IMPORTS   = user32
+ 
+ VER_PRODUCTVERSION = 10,0,14393,0
+ 
+ SOURCES = \
+-	device.c
++	device.c \
++	guids.c \
++	misc.c \
++	surface.c \
++	target.c \
++	transform.c
+diff --git a/dlls/dcomp/dcomp.spec b/dlls/dcomp/dcomp.spec
+index 2120ce8b6f..1fcd6b7761 100644
+--- a/dlls/dcomp/dcomp.spec
++++ b/dlls/dcomp/dcomp.spec
+@@ -16,7 +16,8 @@
+ @ stdcall DCompositionCreateDevice2(ptr ptr ptr)
+ @ stdcall DCompositionCreateDevice3(ptr ptr ptr)
+ @ stdcall DCompositionCreateDevice(ptr ptr ptr)
+-@ stub DCompositionCreateSurfaceHandle
++@ stdcall DCompositionCreateSurfaceHandle(long ptr ptr)
++@ stdcall DCompositionWaitForCompositorClock(long ptr long)
+ @ stub DeserializeEffectDescription
+ @ stdcall -private DllCanUnloadNow()
+ @ stub DllGetActivationFactory
+diff --git a/dlls/dcomp/dcomp_private.h b/dlls/dcomp/dcomp_private.h
+new file mode 100644
+index 0000000000..1edb2cbcc6
+--- /dev/null
++++ b/dlls/dcomp/dcomp_private.h
+@@ -0,0 +1,253 @@
++/*
++ * DirectComposition private definitions
++ *
++ * Copyright 2026 Adobe Wine Lab
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __DCOMP_PRIVATE_H
++#define __DCOMP_PRIVATE_H
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++#include "d3d11.h"
++#include "dxgi.h"
++/* shobjidl.h, pulled in by the generated headers, includes msxml.h. Its two
++ * interface GUIDs would then be defined in every translation unit of this
++ * module as well as in libuuid, which the linker rejects, so those two blocks
++ * are skipped. */
++#define __IXMLError_INTERFACE_DEFINED__
++#define __IXMLDOMParseError_INTERFACE_DEFINED__
++#include "dcomp.h"
++
++#include "wine/debug.h"
++#include "wine/list.h"
++
++struct dcomp_device;
++
++struct dcomp_visual_child
++{
++    struct list entry;
++    IDCompositionVisual *visual;
++};
++
++struct dcomp_target
++{
++    IDCompositionTarget IDCompositionTarget_iface;
++    LONG ref;
++    struct dcomp_device *device;
++    IDCompositionVisual *root;
++};
++
++struct dcomp_visual
++{
++    IDCompositionVisual IDCompositionVisual_iface;
++    IDCompositionVisual2 IDCompositionVisual2_iface;
++    LONG ref;
++    struct dcomp_device *device;
++    float offset_x, offset_y;
++    IDCompositionTransform *transform;
++    IDCompositionVisual *transform_parent;
++    IDCompositionEffect *effect;
++    IDCompositionClip *clip;
++    enum DCOMPOSITION_BITMAP_INTERPOLATION_MODE interpolation_mode;
++    enum DCOMPOSITION_BORDER_MODE border_mode;
++    enum DCOMPOSITION_COMPOSITE_MODE composite_mode;
++    enum DCOMPOSITION_OPACITY_MODE opacity_mode;
++    enum DCOMPOSITION_BACKFACE_VISIBILITY backface_visibility;
++    IUnknown *content;
++    D2D_MATRIX_3X2_F matrix;
++    BOOL has_matrix;
++    D2D_RECT_F clip_rect;
++    BOOL has_clip_rect;
++    struct list children;
++};
++
++struct dcomp_surface
++{
++    IDCompositionSurface IDCompositionSurface_iface;
++    IDCompositionVirtualSurface IDCompositionVirtualSurface_iface;
++    LONG ref;
++    struct dcomp_device *device;
++    UINT width, height;
++    DXGI_FORMAT pixel_format;
++    DXGI_ALPHA_MODE alpha_mode;
++    ID3D11Texture2D *texture;
++    IDXGISurface *dxgi_surface;
++    BOOL drawing;
++};
++
++struct dcomp_surface_factory
++{
++    IDCompositionSurfaceFactory IDCompositionSurfaceFactory_iface;
++    LONG ref;
++    struct dcomp_device *device;
++};
++
++struct dcomp_animation
++{
++    IDCompositionAnimation IDCompositionAnimation_iface;
++    LONG ref;
++};
++
++struct dcomp_effect_group
++{
++    IDCompositionEffectGroup IDCompositionEffectGroup_iface;
++    LONG ref;
++    float opacity;
++    IDCompositionTransform3D *transform_3d;
++};
++
++struct dcomp_rect_clip
++{
++    IDCompositionRectangleClip IDCompositionRectangleClip_iface;
++    LONG ref;
++    float left, top, right, bottom;
++    float tlx, tly, trx, try_, blx, bly, brx, bry;
++};
++
++/* Transform kinds, shared between the device entry points and transform.c. */
++enum dcomp_transform_kind
++{
++    DCOMP_TRANSFORM_TRANSLATE = 1,
++    DCOMP_TRANSFORM_SCALE,
++    DCOMP_TRANSFORM_MATRIX,
++    DCOMP_TRANSFORM_SKEW,
++    DCOMP_TRANSFORM_ROTATE,
++    DCOMP_TRANSFORM_TRANSLATE_3D,
++    DCOMP_TRANSFORM_SCALE_3D,
++    DCOMP_TRANSFORM_MATRIX_3D,
++    DCOMP_TRANSFORM_GROUP,
++};
++
++struct dcomp_transform
++{
++    /* One member per interface this object can expose. Only the member matching
++     * `kind` has a meaningful vtable. */
++    IDCompositionTranslateTransform IDCompositionTranslateTransform_iface;
++    IDCompositionScaleTransform IDCompositionScaleTransform_iface;
++    IDCompositionMatrixTransform IDCompositionMatrixTransform_iface;
++    IDCompositionSkewTransform IDCompositionSkewTransform_iface;
++    IDCompositionRotateTransform IDCompositionRotateTransform_iface;
++    IDCompositionTranslateTransform3D IDCompositionTranslateTransform3D_iface;
++    IDCompositionScaleTransform3D IDCompositionScaleTransform3D_iface;
++    IDCompositionMatrixTransform3D IDCompositionMatrixTransform3D_iface;
++    LONG ref;
++    enum dcomp_transform_kind kind;
++    float off_x, off_y, off_z;
++    float scale_x, scale_y, scale_z, center_x, center_y, center_z;
++    float angle, angle_x, angle_y, skew_x, skew_y;
++    D2D_MATRIX_3X2_F matrix;
++    D2D_MATRIX_4X4_F matrix_3d;
++    IDCompositionTransform **members;
++    UINT member_count;
++};
++
++struct dcomp_device
++{
++    IDCompositionDevice IDCompositionDevice_iface;
++    IDCompositionDevice3 IDCompositionDevice3_iface;
++    IDCompositionDesktopDevice IDCompositionDesktopDevice_iface;
++    LONG ref;
++
++    /* The rendering device the composition device was created with; may be
++     * NULL. A D3D11 device is cached for surface creation. */
++    IUnknown *rendering_device;
++    ID3D11Device *d3d_device;
++    BOOL valid;
++};
++
++static inline struct dcomp_device *device_from_IDCompositionDevice(IDCompositionDevice *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_device, IDCompositionDevice_iface);
++}
++
++static inline struct dcomp_device *device_from_IDCompositionDevice3(IDCompositionDevice3 *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_device, IDCompositionDevice3_iface);
++}
++
++static inline struct dcomp_device *device_from_IDCompositionDesktopDevice(IDCompositionDesktopDevice *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_device, IDCompositionDesktopDevice_iface);
++}
++
++static inline struct dcomp_target *target_from_IDCompositionTarget(IDCompositionTarget *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_target, IDCompositionTarget_iface);
++}
++
++static inline struct dcomp_visual *visual_from_IDCompositionVisual(IDCompositionVisual *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_visual, IDCompositionVisual_iface);
++}
++
++static inline struct dcomp_visual *visual_from_IDCompositionVisual2(IDCompositionVisual2 *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_visual, IDCompositionVisual2_iface);
++}
++
++static inline struct dcomp_surface *surface_from_IDCompositionSurface(IDCompositionSurface *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_surface, IDCompositionSurface_iface);
++}
++
++static inline struct dcomp_surface *surface_from_IDCompositionVirtualSurface(IDCompositionVirtualSurface *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_surface, IDCompositionVirtualSurface_iface);
++}
++
++static inline struct dcomp_transform *transform_from_IDCompositionTranslateTransform(IDCompositionTranslateTransform *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_transform, IDCompositionTranslateTransform_iface);
++}
++
++static inline struct dcomp_transform *transform_from_IDCompositionScaleTransform(IDCompositionScaleTransform *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_transform, IDCompositionScaleTransform_iface);
++}
++
++static inline struct dcomp_transform *transform_from_IDCompositionMatrixTransform(IDCompositionMatrixTransform *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_transform, IDCompositionMatrixTransform_iface);
++}
++
++static inline struct dcomp_transform *transform_from_IDCompositionSkewTransform(IDCompositionSkewTransform *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_transform, IDCompositionSkewTransform_iface);
++}
++
++static inline struct dcomp_transform *transform_from_IDCompositionRotateTransform(IDCompositionRotateTransform *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_transform, IDCompositionRotateTransform_iface);
++}
++
++/* Object constructors. */
++HRESULT dcomp_target_create(struct dcomp_device *device, IDCompositionTarget **out);
++HRESULT dcomp_visual_create(struct dcomp_device *device, BOOL want_v2, void **out);
++HRESULT dcomp_surface_create(struct dcomp_device *device, UINT width, UINT height,
++                             DXGI_FORMAT format, DXGI_ALPHA_MODE alpha_mode,
++                             BOOL virtual_surface, void **out);
++HRESULT dcomp_surface_factory_create(struct dcomp_device *device, IDCompositionSurfaceFactory **out);
++HRESULT dcomp_animation_create(IDCompositionAnimation **out);
++HRESULT dcomp_effect_group_create(IDCompositionEffectGroup **out);
++HRESULT dcomp_rect_clip_create(IDCompositionRectangleClip **out);
++HRESULT dcomp_transform_create(enum dcomp_transform_kind kind, void **out);
++
++#endif /* __DCOMP_PRIVATE_H */
+diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
+index 2744d758e9..ccd0ca8204 100644
+--- a/dlls/dcomp/device.c
++++ b/dlls/dcomp/device.c
+@@ -1,47 +1,762 @@
+-/*
+- * Copyright 2020 Nikolay Sivov for CodeWeavers
+- *
+- * This library is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU Lesser General Public
+- * License as published by the Free Software Foundation; either
+- * version 2.1 of the License, or (at your option) any later version.
+- *
+- * This library is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public
+- * License along with this library; if not, write to the Free Software
+- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+- */
+-#include <stdarg.h>
+-
+-#include "windef.h"
+-#include "winbase.h"
+-#include "objidl.h"
+-#include "dxgi.h"
+-#include "wine/debug.h"
+-
+-WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
+-
+-HRESULT WINAPI DCompositionCreateDevice(IDXGIDevice *dxgi_device, REFIID iid, void **device)
+-{
+-    FIXME("%p, %s, %p.\n", dxgi_device, debugstr_guid(iid), device);
+-
+-    return E_NOTIMPL;
+-}
+-
+-HRESULT WINAPI DCompositionCreateDevice2(IUnknown *rendering_device, REFIID iid, void **device)
+-{
+-    FIXME("%p, %s, %p.\n", rendering_device, debugstr_guid(iid), device);
+-
+-    return E_NOTIMPL;
+-}
+-
+-HRESULT WINAPI DCompositionCreateDevice3(IUnknown *rendering_device, REFIID iid, void **device)
+-{
+-    FIXME("%p, %s, %p.\n", rendering_device, debugstr_guid(iid), device);
+-
+-    return E_NOTIMPL;
+-}
++/*
++ * DirectComposition device
++ *
++ * Copyright 2020 Nikolay Sivov for CodeWeavers
++ * Copyright 2026 Adobe Wine Lab
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++
++
++#include "dcomp_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
++
++/* --- shared implementations, taking the device directly --------------- */
++
++static HRESULT device_commit(struct dcomp_device *device)
++{
++    device->valid = TRUE;
++    return S_OK;
++}
++
++static HRESULT device_get_frame_statistics(struct dcomp_device *device,
++                                           DCOMPOSITION_FRAME_STATISTICS *statistics)
++{
++    if (!statistics) return E_INVALIDARG;
++    memset(statistics, 0, sizeof(*statistics));
++    return S_OK;
++}
++
++static HRESULT device_create_target_for_hwnd(struct dcomp_device *device, HWND hwnd,
++                                             BOOL topmost, IDCompositionTarget **target)
++{
++    if (!target) return E_INVALIDARG;
++    if (!hwnd || !IsWindow(hwnd)) return E_INVALIDARG;
++    if (topmost) FIXME("topmost is not supported yet\n");
++    return dcomp_target_create(device, target);
++}
++
++static HRESULT device_create_visual2(struct dcomp_device *device, IDCompositionVisual2 **visual)
++{
++    if (!visual) return E_INVALIDARG;
++    return dcomp_visual_create(device, TRUE, (void **)visual);
++}
++
++static HRESULT device_create_visual1(struct dcomp_device *device, IDCompositionVisual **visual)
++{
++    if (!visual) return E_INVALIDARG;
++    return dcomp_visual_create(device, FALSE, (void **)visual);
++}
++
++static HRESULT device_create_surface_factory(struct dcomp_device *device,
++                                             IDCompositionSurfaceFactory **factory)
++{
++    if (!factory) return E_INVALIDARG;
++    return dcomp_surface_factory_create(device, factory);
++}
++
++static HRESULT device_create_surface(struct dcomp_device *device, UINT width, UINT height,
++                                     DXGI_FORMAT format, DXGI_ALPHA_MODE alpha_mode,
++                                     IDCompositionSurface **surface)
++{
++    if (!surface) return E_INVALIDARG;
++    return dcomp_surface_create(device, width, height, format, alpha_mode, FALSE, (void **)surface);
++}
++
++static HRESULT device_create_virtual_surface(struct dcomp_device *device, UINT width, UINT height,
++                                             DXGI_FORMAT format, DXGI_ALPHA_MODE alpha_mode,
++                                             IDCompositionVirtualSurface **surface)
++{
++    if (!surface) return E_INVALIDARG;
++    return dcomp_surface_create(device, width, height, format, alpha_mode, TRUE, (void **)surface);
++}
++
++static HRESULT device_create_animation(struct dcomp_device *device, IDCompositionAnimation **animation)
++{
++    if (!animation) return E_INVALIDARG;
++    return dcomp_animation_create(animation);
++}
++
++static HRESULT device_create_effect_group(struct dcomp_device *device, IDCompositionEffectGroup **effect_group)
++{
++    if (!effect_group) return E_INVALIDARG;
++    return dcomp_effect_group_create(effect_group);
++}
++
++static HRESULT device_create_rectangle_clip(struct dcomp_device *device, IDCompositionRectangleClip **clip)
++{
++    if (!clip) return E_INVALIDARG;
++    return dcomp_rect_clip_create(clip);
++}
++
++static HRESULT device_create_transform(struct dcomp_device *device, enum dcomp_transform_kind kind,
++                                       void **transform)
++{
++    if (!transform) return E_INVALIDARG;
++    return dcomp_transform_create(kind, transform);
++}
++
++static HRESULT device_check_device_state(struct dcomp_device *device, BOOL *valid)
++{
++    if (!valid) return E_INVALIDARG;
++    *valid = device->valid;
++    return S_OK;
++}
++
++static HRESULT device_create_surface_from_handle(struct dcomp_device *device, HANDLE handle,
++                                                 IUnknown **surface)
++{
++    if (!surface) return E_INVALIDARG;
++    FIXME("handle %p: cross-process surfaces are not supported yet\n", handle);
++    return E_NOTIMPL;
++}
++
++static HRESULT device_create_surface_from_hwnd(struct dcomp_device *device, HWND hwnd,
++                                               IUnknown **surface)
++{
++    if (!surface) return E_INVALIDARG;
++    FIXME("hwnd %p: window content surfaces are not supported yet\n", hwnd);
++    return E_NOTIMPL;
++}
++
++/* --- method generation -------------------------------------------------
++ *
++ * A derived interface's vtable declares its inherited methods with the
++ * derived interface type, so the three exposed interfaces cannot share
++ * function pointers and are generated from a common body instead. */
++
++#define GEN_DEVICE2_CORE(NAME, IF, CONV)                                                              \
++static HRESULT STDMETHODCALLTYPE NAME##_Commit(IF *iface)                                         \
++{                                                                                               \
++    struct dcomp_device *device = CONV(iface);                                                  \
++    TRACE("iface %p.\n", iface);                                                                \
++    return device_commit(device);                                                               \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_WaitForCommitCompletion(IF *iface)                        \
++{                                                                                               \
++    TRACE("iface %p.\n", iface);                                                                \
++    return S_OK;                                                                                \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_GetFrameStatistics(IF *iface,                             \
++        DCOMPOSITION_FRAME_STATISTICS *statistics)                                              \
++{                                                                                               \
++    return device_get_frame_statistics(CONV(iface), statistics);                                \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateVisual(IF *iface, IDCompositionVisual2 **visual)    \
++{                                                                                               \
++    return device_create_visual2(CONV(iface), visual);                                          \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSurfaceFactory(IF *iface, IUnknown *rendering_device, \
++        IDCompositionSurfaceFactory **surface_factory)                                          \
++{                                                                                               \
++    return device_create_surface_factory(CONV(iface), surface_factory);                         \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSurface(IF *iface, UINT width, UINT height,         \
++        DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode, IDCompositionSurface **surface)   \
++{                                                                                               \
++    return device_create_surface(CONV(iface), width, height, pixel_format, alpha_mode, surface);\
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateVirtualSurface(IF *iface, UINT width, UINT height,   \
++        DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode, IDCompositionVirtualSurface **surface) \
++{                                                                                               \
++    return device_create_virtual_surface(CONV(iface), width, height, pixel_format, alpha_mode,   \
++                                         surface);                                              \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTranslateTransform(IF *iface,                       \
++        IDCompositionTranslateTransform **transform)                                            \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_TRANSLATE, (void **)transform);  \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateScaleTransform(IF *iface,                           \
++        IDCompositionScaleTransform **transform)                                                \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_SCALE, (void **)transform);      \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateRotateTransform(IF *iface,                          \
++        IDCompositionRotateTransform **transform)                                               \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_ROTATE, (void **)transform);     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSkewTransform(IF *iface,                            \
++        IDCompositionSkewTransform **transform)                                                 \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_SKEW, (void **)transform);       \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateMatrixTransform(IF *iface,                          \
++        IDCompositionMatrixTransform **transform)                                               \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_MATRIX, (void **)transform);     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTransformGroup(IF *iface,                           \
++        IDCompositionTransform **transforms, UINT elements, IDCompositionTransform **transform_group) \
++{                                                                                               \
++    FIXME("transform groups are not supported yet\n");                                          \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTranslateTransform3D(IF *iface,                     \
++        IDCompositionTranslateTransform3D **transform_3d)                                       \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateScaleTransform3D(IF *iface,                         \
++        IDCompositionScaleTransform3D **transform_3d)                                           \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateRotateTransform3D(IF *iface,                        \
++        IDCompositionRotateTransform3D **transform_3d)                                          \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateMatrixTransform3D(IF *iface,                        \
++        IDCompositionMatrixTransform3D **transform_3d)                                          \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTransform3DGroup(IF *iface,                         \
++        IDCompositionTransform3D **transforms_3d, UINT elements, IDCompositionTransform3D **transform_3d_group) \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateEffectGroup(IF *iface,                              \
++        IDCompositionEffectGroup **effect_group)                                                \
++{                                                                                               \
++    return device_create_effect_group(CONV(iface), effect_group);                               \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateRectangleClip(IF *iface,                            \
++        IDCompositionRectangleClip **clip)                                                      \
++{                                                                                               \
++    return device_create_rectangle_clip(CONV(iface), clip);                                     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateAnimation(IF *iface, IDCompositionAnimation **animation) \
++{                                                                                               \
++    return device_create_animation(CONV(iface), animation);                                     \
++}
++
++#define GEN_DEVICE1(NAME, IF, CONV)                                                                   \
++static HRESULT STDMETHODCALLTYPE NAME##_Commit(IF *iface)                                         \
++{                                                                                               \
++    return device_commit(CONV(iface));                                                          \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_WaitForCommitCompletion(IF *iface)                        \
++{                                                                                               \
++    return S_OK;                                                                                \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_GetFrameStatistics(IF *iface,                             \
++        DCOMPOSITION_FRAME_STATISTICS *statistics)                                              \
++{                                                                                               \
++    return device_get_frame_statistics(CONV(iface), statistics);                                \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTargetForHwnd(IF *iface, HWND hwnd, BOOL topmost,   \
++        IDCompositionTarget **target)                                                           \
++{                                                                                               \
++    return device_create_target_for_hwnd(CONV(iface), hwnd, topmost, target);                   \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateVisual(IF *iface, IDCompositionVisual **visual)     \
++{                                                                                               \
++    return device_create_visual1(CONV(iface), visual);                                          \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSurface(IF *iface, UINT width, UINT height,         \
++        DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode, IDCompositionSurface **surface)   \
++{                                                                                               \
++    return device_create_surface(CONV(iface), width, height, pixel_format, alpha_mode, surface);\
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateVirtualSurface(IF *iface, UINT width, UINT height,   \
++        DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode, IDCompositionVirtualSurface **surface) \
++{                                                                                               \
++    return device_create_virtual_surface(CONV(iface), width, height, pixel_format, alpha_mode,   \
++                                         surface);                                              \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSurfaceFromHandle(IF *iface, HANDLE handle,         \
++        IUnknown **surface)                                                                     \
++{                                                                                               \
++    return device_create_surface_from_handle(CONV(iface), handle, surface);                     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSurfaceFromHwnd(IF *iface, HWND hwnd, IUnknown **surface) \
++{                                                                                               \
++    return device_create_surface_from_hwnd(CONV(iface), hwnd, surface);                         \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTranslateTransform(IF *iface,                       \
++        IDCompositionTranslateTransform **transform)                                            \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_TRANSLATE, (void **)transform);  \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateScaleTransform(IF *iface,                           \
++        IDCompositionScaleTransform **transform)                                                \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_SCALE, (void **)transform);      \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateRotateTransform(IF *iface,                          \
++        IDCompositionRotateTransform **transform)                                               \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_ROTATE, (void **)transform);     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSkewTransform(IF *iface,                            \
++        IDCompositionSkewTransform **transform)                                                 \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_SKEW, (void **)transform);       \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateMatrixTransform(IF *iface,                          \
++        IDCompositionMatrixTransform **transform)                                               \
++{                                                                                               \
++    return device_create_transform(CONV(iface), DCOMP_TRANSFORM_MATRIX, (void **)transform);     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTransformGroup(IF *iface,                           \
++        IDCompositionTransform **transforms, UINT elements, IDCompositionTransform **transform_group) \
++{                                                                                               \
++    FIXME("transform groups are not supported yet\n");                                          \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTranslateTransform3D(IF *iface,                     \
++        IDCompositionTranslateTransform3D **transform_3d)                                       \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateScaleTransform3D(IF *iface,                         \
++        IDCompositionScaleTransform3D **transform_3d)                                           \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateRotateTransform3D(IF *iface,                        \
++        IDCompositionRotateTransform3D **transform_3d)                                          \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateMatrixTransform3D(IF *iface,                        \
++        IDCompositionMatrixTransform3D **transform_3d)                                          \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTransform3DGroup(IF *iface,                         \
++        IDCompositionTransform3D **transforms_3d, UINT elements, IDCompositionTransform3D **transform_3d_group) \
++{                                                                                               \
++    FIXME("3D transforms are not supported yet\n");                                             \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateEffectGroup(IF *iface,                              \
++        IDCompositionEffectGroup **effect_group)                                                \
++{                                                                                               \
++    return device_create_effect_group(CONV(iface), effect_group);                               \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateRectangleClip(IF *iface,                            \
++        IDCompositionRectangleClip **clip)                                                      \
++{                                                                                               \
++    return device_create_rectangle_clip(CONV(iface), clip);                                     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateAnimation(IF *iface, IDCompositionAnimation **animation) \
++{                                                                                               \
++    return device_create_animation(CONV(iface), animation);                                     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CheckDeviceState(IF *iface, BOOL *valid)                  \
++{                                                                                               \
++    return device_check_device_state(CONV(iface), valid);                                       \
++}
++
++#define GEN_DESKTOP_EXTRA(NAME, IF, CONV)                                                             \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTargetForHwnd(IF *iface, HWND hwnd, BOOL topmost,   \
++        IDCompositionTarget **target)                                                           \
++{                                                                                               \
++    return device_create_target_for_hwnd(CONV(iface), hwnd, topmost, target);                   \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSurfaceFromHandle(IF *iface, HANDLE handle,         \
++        IUnknown **surface)                                                                     \
++{                                                                                               \
++    return device_create_surface_from_handle(CONV(iface), handle, surface);                     \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSurfaceFromHwnd(IF *iface, HWND hwnd, IUnknown **surface) \
++{                                                                                               \
++    return device_create_surface_from_hwnd(CONV(iface), hwnd, surface);                         \
++}
++
++#define GEN_DEVICE3_EXTRA(NAME, IF)                                                                   \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateGaussianBlurEffect(IF *iface,                       \
++        IDCompositionGaussianBlurEffect **effect)                                               \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateBrightnessEffect(IF *iface,                         \
++        IDCompositionBrightnessEffect **effect)                                                 \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateColorMatrixEffect(IF *iface,                        \
++        IDCompositionColorMatrixEffect **effect)                                                \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateShadowEffect(IF *iface,                             \
++        IDCompositionShadowEffect **effect)                                                     \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateHueRotationEffect(IF *iface,                        \
++        IDCompositionHueRotationEffect **effect)                                                \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateSaturationEffect(IF *iface,                         \
++        IDCompositionSaturationEffect **effect)                                                 \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTurbulenceEffect(IF *iface,                         \
++        IDCompositionTurbulenceEffect **effect)                                                 \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateLinearTransferEffect(IF *iface,                     \
++        IDCompositionLinearTransferEffect **effect)                                             \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateTableTransferEffect(IF *iface,                      \
++        IDCompositionTableTransferEffect **effect)                                              \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateCompositeEffect(IF *iface,                          \
++        IDCompositionCompositeEffect **effect)                                                  \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateBlendEffect(IF *iface,                              \
++        IDCompositionBlendEffect **effect)                                                      \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateArithmeticCompositeEffect(IF *iface,                \
++        IDCompositionArithmeticCompositeEffect **effect)                                        \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}                                                                                               \
++static HRESULT STDMETHODCALLTYPE NAME##_CreateAffineTransform2DEffect(IF *iface,                  \
++        IDCompositionAffineTransform2DEffect **effect)                                          \
++{                                                                                               \
++    FIXME("filter effects are not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                           \
++}
++
++GEN_DEVICE1(dcomp_device1, IDCompositionDevice, device_from_IDCompositionDevice)
++GEN_DEVICE2_CORE(dcomp_device3, IDCompositionDevice3, device_from_IDCompositionDevice3)
++GEN_DEVICE3_EXTRA(dcomp_device3, IDCompositionDevice3)
++GEN_DEVICE2_CORE(dcomp_desktop, IDCompositionDesktopDevice, device_from_IDCompositionDesktopDevice)
++GEN_DESKTOP_EXTRA(dcomp_desktop, IDCompositionDesktopDevice, device_from_IDCompositionDesktopDevice)
++
++/* --- IUnknown, one set per exposed interface --------------------------- */
++
++static HRESULT device_query_interface(struct dcomp_device *device, REFIID riid, void **out)
++{
++    *out = NULL;
++
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDCompositionDevice))
++        *out = &device->IDCompositionDevice_iface;
++    else if (IsEqualIID(riid, &IID_IDCompositionDevice3))
++        *out = &device->IDCompositionDevice3_iface;
++    else if (IsEqualIID(riid, &IID_IDCompositionDesktopDevice) ||
++             IsEqualIID(riid, &IID_IDCompositionDevice2))
++        *out = &device->IDCompositionDesktopDevice_iface;
++
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&device->ref);
++    return S_OK;
++}
++
++#define GEN_IUNKNOWN(NAME, IF, CONV)                                                    \
++static HRESULT STDMETHODCALLTYPE NAME##_QueryInterface(IF *iface, REFIID riid, void **out) \
++{                                                                                 \
++    struct dcomp_device *device = CONV(iface);                                    \
++    TRACE("iface %p, riid %s, out %p.\n", iface, debugstr_guid(riid), out);       \
++    return device_query_interface(device, riid, out);                             \
++}                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_AddRef(IF *iface)                             \
++{                                                                                 \
++    struct dcomp_device *device = CONV(iface);                                    \
++    ULONG ref = InterlockedIncrement(&device->ref);                               \
++    TRACE("iface %p, ref %lu.\n", iface, ref);                                     \
++    return ref;                                                                   \
++}                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_Release(IF *iface)                            \
++{                                                                                 \
++    struct dcomp_device *device = CONV(iface);                                    \
++    ULONG ref = InterlockedDecrement(&device->ref);                               \
++    TRACE("iface %p, ref %lu.\n", iface, ref);                                     \
++    if (!ref)                                                                     \
++    {                                                                             \
++        if (device->d3d_device) device->d3d_device->lpVtbl->Release(device->d3d_device);         \
++        if (device->rendering_device) device->rendering_device->lpVtbl->Release(device->rendering_device); \
++        free(device);                                                             \
++    }                                                                             \
++    return ref;                                                                   \
++}
++
++GEN_IUNKNOWN(dcomp_device1, IDCompositionDevice, device_from_IDCompositionDevice)
++GEN_IUNKNOWN(dcomp_device3, IDCompositionDevice3, device_from_IDCompositionDevice3)
++GEN_IUNKNOWN(dcomp_desktop, IDCompositionDesktopDevice, device_from_IDCompositionDesktopDevice)
++
++/* --- vtables ----------------------------------------------------------- */
++
++static const IDCompositionDeviceVtbl dcomp_device_vtbl =
++{
++    dcomp_device1_QueryInterface,
++    dcomp_device1_AddRef,
++    dcomp_device1_Release,
++    dcomp_device1_Commit,
++    dcomp_device1_WaitForCommitCompletion,
++    dcomp_device1_GetFrameStatistics,
++    dcomp_device1_CreateTargetForHwnd,
++    dcomp_device1_CreateVisual,
++    dcomp_device1_CreateSurface,
++    dcomp_device1_CreateVirtualSurface,
++    dcomp_device1_CreateSurfaceFromHandle,
++    dcomp_device1_CreateSurfaceFromHwnd,
++    dcomp_device1_CreateTranslateTransform,
++    dcomp_device1_CreateScaleTransform,
++    dcomp_device1_CreateRotateTransform,
++    dcomp_device1_CreateSkewTransform,
++    dcomp_device1_CreateMatrixTransform,
++    dcomp_device1_CreateTransformGroup,
++    dcomp_device1_CreateTranslateTransform3D,
++    dcomp_device1_CreateScaleTransform3D,
++    dcomp_device1_CreateRotateTransform3D,
++    dcomp_device1_CreateMatrixTransform3D,
++    dcomp_device1_CreateTransform3DGroup,
++    dcomp_device1_CreateEffectGroup,
++    dcomp_device1_CreateRectangleClip,
++    dcomp_device1_CreateAnimation,
++    dcomp_device1_CheckDeviceState,
++};
++
++static const IDCompositionDevice3Vtbl dcomp_device3_vtbl =
++{
++    dcomp_device3_QueryInterface,
++    dcomp_device3_AddRef,
++    dcomp_device3_Release,
++    dcomp_device3_Commit,
++    dcomp_device3_WaitForCommitCompletion,
++    dcomp_device3_GetFrameStatistics,
++    dcomp_device3_CreateVisual,
++    dcomp_device3_CreateSurfaceFactory,
++    dcomp_device3_CreateSurface,
++    dcomp_device3_CreateVirtualSurface,
++    dcomp_device3_CreateTranslateTransform,
++    dcomp_device3_CreateScaleTransform,
++    dcomp_device3_CreateRotateTransform,
++    dcomp_device3_CreateSkewTransform,
++    dcomp_device3_CreateMatrixTransform,
++    dcomp_device3_CreateTransformGroup,
++    dcomp_device3_CreateTranslateTransform3D,
++    dcomp_device3_CreateScaleTransform3D,
++    dcomp_device3_CreateRotateTransform3D,
++    dcomp_device3_CreateMatrixTransform3D,
++    dcomp_device3_CreateTransform3DGroup,
++    dcomp_device3_CreateEffectGroup,
++    dcomp_device3_CreateRectangleClip,
++    dcomp_device3_CreateAnimation,
++    dcomp_device3_CreateGaussianBlurEffect,
++    dcomp_device3_CreateBrightnessEffect,
++    dcomp_device3_CreateColorMatrixEffect,
++    dcomp_device3_CreateShadowEffect,
++    dcomp_device3_CreateHueRotationEffect,
++    dcomp_device3_CreateSaturationEffect,
++    dcomp_device3_CreateTurbulenceEffect,
++    dcomp_device3_CreateLinearTransferEffect,
++    dcomp_device3_CreateTableTransferEffect,
++    dcomp_device3_CreateCompositeEffect,
++    dcomp_device3_CreateBlendEffect,
++    dcomp_device3_CreateArithmeticCompositeEffect,
++    dcomp_device3_CreateAffineTransform2DEffect,
++};
++
++static const IDCompositionDesktopDeviceVtbl dcomp_desktop_device_vtbl =
++{
++    dcomp_desktop_QueryInterface,
++    dcomp_desktop_AddRef,
++    dcomp_desktop_Release,
++    dcomp_desktop_Commit,
++    dcomp_desktop_WaitForCommitCompletion,
++    dcomp_desktop_GetFrameStatistics,
++    dcomp_desktop_CreateVisual,
++    dcomp_desktop_CreateSurfaceFactory,
++    dcomp_desktop_CreateSurface,
++    dcomp_desktop_CreateVirtualSurface,
++    dcomp_desktop_CreateTranslateTransform,
++    dcomp_desktop_CreateScaleTransform,
++    dcomp_desktop_CreateRotateTransform,
++    dcomp_desktop_CreateSkewTransform,
++    dcomp_desktop_CreateMatrixTransform,
++    dcomp_desktop_CreateTransformGroup,
++    dcomp_desktop_CreateTranslateTransform3D,
++    dcomp_desktop_CreateScaleTransform3D,
++    dcomp_desktop_CreateRotateTransform3D,
++    dcomp_desktop_CreateMatrixTransform3D,
++    dcomp_desktop_CreateTransform3DGroup,
++    dcomp_desktop_CreateEffectGroup,
++    dcomp_desktop_CreateRectangleClip,
++    dcomp_desktop_CreateAnimation,
++    dcomp_desktop_CreateTargetForHwnd,
++    dcomp_desktop_CreateSurfaceFromHandle,
++    dcomp_desktop_CreateSurfaceFromHwnd,
++};
++
++/* --- creation ---------------------------------------------------------- */
++
++static HRESULT dcomp_device_create(IUnknown *rendering_device, REFIID iid, void **out)
++{
++    struct dcomp_device *device;
++    HRESULT hr;
++
++    if (!out) return E_INVALIDARG;
++    *out = NULL;
++
++    if (!(device = calloc(1, sizeof(*device)))) return E_OUTOFMEMORY;
++
++    device->IDCompositionDevice_iface.lpVtbl = &dcomp_device_vtbl;
++    device->IDCompositionDevice3_iface.lpVtbl = &dcomp_device3_vtbl;
++    device->IDCompositionDesktopDevice_iface.lpVtbl = &dcomp_desktop_device_vtbl;
++    device->ref = 1;
++    device->valid = TRUE;
++
++    if (rendering_device)
++    {
++        device->rendering_device = rendering_device;
++        rendering_device->lpVtbl->AddRef(rendering_device);
++
++        /* Cache a D3D11 device so surfaces can be created; a rendering device
++         * may be the D3D11 device itself or a DXGI device whose parent it is. */
++        if (FAILED(rendering_device->lpVtbl->QueryInterface(rendering_device, &IID_ID3D11Device,
++                                           (void **)&device->d3d_device)))
++        {
++            IDXGIDevice *dxgi_device;
++            if (SUCCEEDED(rendering_device->lpVtbl->QueryInterface(rendering_device, &IID_IDXGIDevice,
++                                                  (void **)&dxgi_device)))
++            {
++                dxgi_device->lpVtbl->GetParent(dxgi_device, &IID_ID3D11Device, (void **)&device->d3d_device);
++                dxgi_device->lpVtbl->Release(dxgi_device);
++            }
++        }
++    }
++
++    hr = device_query_interface(device, iid, out);
++    dcomp_device1_Release(&device->IDCompositionDevice_iface);
++    if (FAILED(hr))
++    {
++        WARN("unsupported interface %s\n", debugstr_guid(iid));
++        return hr;
++    }
++
++    TRACE("created device %p for iid %s\n", device, debugstr_guid(iid));
++    return S_OK;
++}
++
++/***********************************************************************
++ *           DCompositionCreateDevice (dcomp.@)
++ */
++HRESULT WINAPI DCompositionCreateDevice(IDXGIDevice *dxgi_device, REFIID iid, void **device)
++{
++    TRACE("dxgi_device %p, iid %s, device %p.\n", dxgi_device, debugstr_guid(iid), device);
++
++    return dcomp_device_create((IUnknown *)dxgi_device, iid, device);
++}
++
++/***********************************************************************
++ *           DCompositionCreateDevice2 (dcomp.@)
++ */
++HRESULT WINAPI DCompositionCreateDevice2(IUnknown *rendering_device, REFIID iid, void **device)
++{
++    TRACE("rendering_device %p, iid %s, device %p.\n", rendering_device, debugstr_guid(iid), device);
++
++    return dcomp_device_create(rendering_device, iid, device);
++}
++
++/***********************************************************************
++ *           DCompositionCreateDevice3 (dcomp.@)
++ */
++HRESULT WINAPI DCompositionCreateDevice3(IUnknown *rendering_device, REFIID iid, void **device)
++{
++    TRACE("rendering_device %p, iid %s, device %p.\n", rendering_device, debugstr_guid(iid), device);
++
++    return dcomp_device_create(rendering_device, iid, device);
++}
++
++/***********************************************************************
++ *           DCompositionCreateSurfaceHandle (dcomp.@)
++ *
++ * Cross-process composition surfaces are not implemented; returning a handle
++ * that no other entry point can consume would be worse than failing, so this
++ * reports the gap explicitly.
++ */
++HRESULT WINAPI DCompositionCreateSurfaceHandle(DWORD desired_access,
++                                               SECURITY_ATTRIBUTES *security_attributes,
++                                               HANDLE *surface_handle)
++{
++    FIXME("desired_access %#lx, security_attributes %p, surface_handle %p: not supported yet\n",
++          desired_access, security_attributes, surface_handle);
++
++    if (!surface_handle) return E_INVALIDARG;
++    *surface_handle = NULL;
++    return E_NOTIMPL;
++}
++
++/***********************************************************************
++ *           DCompositionWaitForCompositorClock (dcomp.@)
++ *
++ * Waits for the next compositor clock tick, or for one of the supplied
++ * handles. Without a compositor clock to synchronise with, the wait is
++ * performed on the caller's handles alone, which preserves the contract that
++ * the call does not return before one of its inputs is ready.
++ */
++DWORD WINAPI DCompositionWaitForCompositorClock(UINT count, const HANDLE *handles, DWORD timeout)
++{
++    TRACE("count %u, handles %p, timeout %lu.\n", count, handles, timeout);
++
++    if (count && !handles) return 0;
++    if (!count)
++    {
++        if (timeout == INFINITE) return 0;
++        Sleep(timeout);
++        return 0;
++    }
++
++    return WaitForMultipleObjects(count, handles, FALSE, timeout);
++}
+diff --git a/dlls/dcomp/guids.c b/dlls/dcomp/guids.c
+new file mode 100644
+index 0000000000..e9f9c46a8b
+--- /dev/null
++++ b/dlls/dcomp/guids.c
+@@ -0,0 +1,56 @@
++/*
++ * DirectComposition interface GUIDs
++ *
++ * Copyright 2026 Adobe Wine Lab
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++/* Only the GUIDs this module references are defined, and they are written out in
++ * full rather than through DEFINE_GUID under <initguid.h>: that would define every
++ * GUID of every transitively included header, clashing with libuuid and libdxguid. */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++
++const GUID IID_IUnknown = { 0x00000000, 0x0000, 0x0000, { 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };
++const GUID IID_IDCompositionDevice = { 0xc37ea93a, 0xe7aa, 0x450d, { 0xb1, 0x6f, 0x97, 0x46, 0xcb, 0x04, 0x07, 0xf3 } };
++const GUID IID_IDCompositionDevice2 = { 0x75f6468d, 0x1b8e, 0x447c, { 0x9b, 0xc6, 0x75, 0xfe, 0xa8, 0x0b, 0x5b, 0x25 } };
++const GUID IID_IDCompositionDevice3 = { 0x0987cb06, 0xf916, 0x48bf, { 0x8d, 0x35, 0xce, 0x76, 0x41, 0x78, 0x1b, 0xd9 } };
++const GUID IID_IDCompositionDesktopDevice = { 0x5f4633fe, 0x1e08, 0x4cb8, { 0x8c, 0x75, 0xce, 0x24, 0x33, 0x3f, 0x56, 0x02 } };
++const GUID IID_IDCompositionTarget = { 0xeacdd04c, 0x117e, 0x4e17, { 0x88, 0xf4, 0xd1, 0xb1, 0x2b, 0x0e, 0x3d, 0x89 } };
++const GUID IID_IDCompositionVisual = { 0x4d93059d, 0x097b, 0x4651, { 0x9a, 0x60, 0xf0, 0xf2, 0x51, 0x16, 0xe2, 0xf3 } };
++const GUID IID_IDCompositionVisual2 = { 0xe8de1639, 0x4331, 0x4b26, { 0xbc, 0x5f, 0x6a, 0x32, 0x1d, 0x34, 0x7a, 0x85 } };
++const GUID IID_IDCompositionSurface = { 0xbb8a4953, 0x2c99, 0x4f5a, { 0x96, 0xf5, 0x48, 0x19, 0x02, 0x7f, 0xa3, 0xac } };
++const GUID IID_IDCompositionVirtualSurface = { 0xae471c51, 0x5f53, 0x4a24, { 0x8d, 0x3e, 0xd0, 0xc3, 0x9c, 0x30, 0xb3, 0xf0 } };
++const GUID IID_IDCompositionSurfaceFactory = { 0xe334bc12, 0x3937, 0x4e02, { 0x85, 0xeb, 0xfc, 0xf4, 0xeb, 0x30, 0xd2, 0xc8 } };
++const GUID IID_IDCompositionAnimation = { 0xcbfd91d9, 0x51b2, 0x45e4, { 0xb3, 0xde, 0xd1, 0x9c, 0xcf, 0xb8, 0x63, 0xc5 } };
++const GUID IID_IDCompositionEffectGroup = { 0xa7929a74, 0xe6b2, 0x4bd6, { 0x8b, 0x95, 0x40, 0x40, 0x11, 0x9c, 0xa3, 0x4d } };
++const GUID IID_IDCompositionRectangleClip = { 0x9842ad7d, 0xd9cf, 0x4908, { 0xae, 0xd7, 0x48, 0xb5, 0x1d, 0xa5, 0xe7, 0xc2 } };
++const GUID IID_IDCompositionClip = { 0x64ac3703, 0x9d3f, 0x45ec, { 0xa1, 0x09, 0x7c, 0xac, 0x0e, 0x7a, 0x13, 0xa7 } };
++const GUID IID_IDCompositionEffect = { 0xec81b08f, 0xbfcb, 0x4e8d, { 0xb1, 0x93, 0xa9, 0x15, 0x58, 0x79, 0x99, 0xe8 } };
++const GUID IID_IDCompositionTransform = { 0xfd55faa7, 0x37e0, 0x4c20, { 0x95, 0xd2, 0x9b, 0xe4, 0x5b, 0xc3, 0x3f, 0x55 } };
++const GUID IID_IDCompositionTransform3D = { 0x71185722, 0x246b, 0x41f2, { 0xaa, 0xd1, 0x04, 0x43, 0xf7, 0xf4, 0xbf, 0xc2 } };
++const GUID IID_IDCompositionTranslateTransform = { 0x06791122, 0xc6f0, 0x417d, { 0x83, 0x23, 0x26, 0x9e, 0x98, 0x7f, 0x59, 0x54 } };
++const GUID IID_IDCompositionScaleTransform = { 0x71fde914, 0x40ef, 0x45ef, { 0xbd, 0x51, 0x68, 0xb0, 0x37, 0xc3, 0x39, 0xf9 } };
++const GUID IID_IDCompositionMatrixTransform = { 0x16cdff07, 0xc503, 0x419c, { 0x83, 0xf2, 0x09, 0x65, 0xc7, 0xaf, 0x1f, 0xa6 } };
++const GUID IID_IDCompositionSkewTransform = { 0xe57aa735, 0xdcdb, 0x4c72, { 0x9c, 0x61, 0x05, 0x91, 0xf5, 0x88, 0x89, 0xee } };
++const GUID IID_IDCompositionRotateTransform = { 0x641ed83c, 0xae96, 0x46c5, { 0x90, 0xdc, 0x32, 0x77, 0x4c, 0xc5, 0xc6, 0xd5 } };
++const GUID IID_ID3D11Device = { 0xdb6f6ddb, 0xac77, 0x4e88, { 0x82, 0x53, 0x81, 0x9d, 0xf9, 0xbb, 0xf1, 0x40 } };
++const GUID IID_IDXGIDevice = { 0x54ec77fa, 0x1377, 0x44e6, { 0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c } };
++const GUID IID_IDXGISurface = { 0xcafcb56c, 0x6ac3, 0x4889, { 0xbf, 0x47, 0x9e, 0x23, 0xbb, 0xd2, 0x60, 0xec } };
+diff --git a/dlls/dcomp/misc.c b/dlls/dcomp/misc.c
+new file mode 100644
+index 0000000000..5c71119e12
+--- /dev/null
++++ b/dlls/dcomp/misc.c
+@@ -0,0 +1,321 @@
++/*
++ * DirectComposition animations, effect groups and clips
++ *
++ * Copyright 2026 Adobe Wine Lab
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++
++#include "dcomp_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
++
++/* --- animation ---------------------------------------------------------
++ *
++ * The curve segments are accepted and retained only insofar as the object
++ * exists with correct identity; no clock is driven, so a value is never
++ * evaluated. Callers that rely on animated output will see the constant
++ * default instead. */
++
++static HRESULT STDMETHODCALLTYPE animation_QueryInterface(IDCompositionAnimation *iface, REFIID riid, void **out)
++{
++    struct dcomp_animation *animation = CONTAINING_RECORD(iface, struct dcomp_animation,
++                                                          IDCompositionAnimation_iface);
++
++    *out = NULL;
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDCompositionAnimation))
++        *out = &animation->IDCompositionAnimation_iface;
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&animation->ref);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE animation_AddRef(IDCompositionAnimation *iface)
++{
++    struct dcomp_animation *animation = CONTAINING_RECORD(iface, struct dcomp_animation,
++                                                          IDCompositionAnimation_iface);
++    return InterlockedIncrement(&animation->ref);
++}
++
++static ULONG STDMETHODCALLTYPE animation_Release(IDCompositionAnimation *iface)
++{
++    struct dcomp_animation *animation = CONTAINING_RECORD(iface, struct dcomp_animation,
++                                                          IDCompositionAnimation_iface);
++    ULONG ref = InterlockedDecrement(&animation->ref);
++
++    if (!ref) free(animation);
++    return ref;
++}
++
++static HRESULT STDMETHODCALLTYPE animation_Reset(IDCompositionAnimation *iface)
++{
++    TRACE("iface %p.\n", iface);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE animation_SetAbsoluteBeginTime(IDCompositionAnimation *iface, LARGE_INTEGER time)
++{
++    FIXME("begin time %lld: evaluated animation output is not implemented\n", (long long)time.QuadPart);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE animation_AddCubic(IDCompositionAnimation *iface, double offset,
++        float constant, float linear, float quadratic, float cubic)
++{
++    TRACE("iface %p, offset %.8e.\n", iface, offset);
++    FIXME("evaluated animation output is not implemented\n");
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE animation_AddSinusoidal(IDCompositionAnimation *iface, double offset,
++        float bias, float amplitude, float frequency, float phase)
++{
++    TRACE("iface %p, offset %.8e.\n", iface, offset);
++    FIXME("evaluated animation output is not implemented\n");
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE animation_AddRepeat(IDCompositionAnimation *iface, double offset, double duration)
++{
++    TRACE("iface %p, offset %.8e.\n", iface, offset);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE animation_End(IDCompositionAnimation *iface, double offset, float value)
++{
++    TRACE("iface %p, offset %.8e, value %.8e.\n", iface, offset, value);
++    return S_OK;
++}
++
++static const IDCompositionAnimationVtbl dcomp_animation_vtbl =
++{
++    animation_QueryInterface,
++    animation_AddRef,
++    animation_Release,
++    animation_Reset,
++    animation_SetAbsoluteBeginTime,
++    animation_AddCubic,
++    animation_AddSinusoidal,
++    animation_AddRepeat,
++    animation_End,
++};
++
++HRESULT dcomp_animation_create(IDCompositionAnimation **out)
++{
++    struct dcomp_animation *animation;
++
++    if (!(animation = calloc(1, sizeof(*animation)))) return E_OUTOFMEMORY;
++
++    animation->IDCompositionAnimation_iface.lpVtbl = &dcomp_animation_vtbl;
++    animation->ref = 1;
++
++    *out = &animation->IDCompositionAnimation_iface;
++    return S_OK;
++}
++
++/* --- effect group ------------------------------------------------------ */
++
++static HRESULT STDMETHODCALLTYPE effect_group_QueryInterface(IDCompositionEffectGroup *iface, REFIID riid, void **out)
++{
++    struct dcomp_effect_group *group = CONTAINING_RECORD(iface, struct dcomp_effect_group,
++                                                         IDCompositionEffectGroup_iface);
++
++    *out = NULL;
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDCompositionEffectGroup) ||
++        IsEqualIID(riid, &IID_IDCompositionEffect))
++        *out = &group->IDCompositionEffectGroup_iface;
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&group->ref);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE effect_group_AddRef(IDCompositionEffectGroup *iface)
++{
++    struct dcomp_effect_group *group = CONTAINING_RECORD(iface, struct dcomp_effect_group,
++                                                         IDCompositionEffectGroup_iface);
++    return InterlockedIncrement(&group->ref);
++}
++
++static ULONG STDMETHODCALLTYPE effect_group_Release(IDCompositionEffectGroup *iface)
++{
++    struct dcomp_effect_group *group = CONTAINING_RECORD(iface, struct dcomp_effect_group,
++                                                         IDCompositionEffectGroup_iface);
++    ULONG ref = InterlockedDecrement(&group->ref);
++
++    if (!ref)
++    {
++        if (group->transform_3d) group->transform_3d->lpVtbl->Release(group->transform_3d);
++        free(group);
++    }
++    return ref;
++}
++
++static HRESULT STDMETHODCALLTYPE effect_group_SetOpacityAnimation(IDCompositionEffectGroup *iface,
++                                                                  IDCompositionAnimation *animation)
++{
++    FIXME("animations are not supported yet\n");
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE effect_group_SetOpacity(IDCompositionEffectGroup *iface, float opacity)
++{
++    struct dcomp_effect_group *group = CONTAINING_RECORD(iface, struct dcomp_effect_group,
++                                                         IDCompositionEffectGroup_iface);
++    if (opacity < 0.0f || opacity > 1.0f) return E_INVALIDARG;
++
++    group->opacity = opacity;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE effect_group_SetTransform3D(IDCompositionEffectGroup *iface,
++                                                             IDCompositionTransform3D *transform)
++{
++    struct dcomp_effect_group *group = CONTAINING_RECORD(iface, struct dcomp_effect_group,
++                                                         IDCompositionEffectGroup_iface);
++
++    if (transform) transform->lpVtbl->AddRef(transform);
++    if (group->transform_3d) group->transform_3d->lpVtbl->Release(group->transform_3d);
++    group->transform_3d = transform;
++    return S_OK;
++}
++
++static const IDCompositionEffectGroupVtbl dcomp_effect_group_vtbl =
++{
++    effect_group_QueryInterface,
++    effect_group_AddRef,
++    effect_group_Release,
++    effect_group_SetOpacityAnimation,
++    effect_group_SetOpacity,
++    effect_group_SetTransform3D,
++};
++
++HRESULT dcomp_effect_group_create(IDCompositionEffectGroup **out)
++{
++    struct dcomp_effect_group *group;
++
++    if (!(group = calloc(1, sizeof(*group)))) return E_OUTOFMEMORY;
++
++    group->IDCompositionEffectGroup_iface.lpVtbl = &dcomp_effect_group_vtbl;
++    group->ref = 1;
++    group->opacity = 1.0f;
++
++    *out = &group->IDCompositionEffectGroup_iface;
++    return S_OK;
++}
++
++/* --- rectangle clip ---------------------------------------------------- */
++
++static struct dcomp_rect_clip *clip_from_iface(IDCompositionRectangleClip *iface)
++{
++    return CONTAINING_RECORD(iface, struct dcomp_rect_clip, IDCompositionRectangleClip_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE clip_QueryInterface(IDCompositionRectangleClip *iface, REFIID riid, void **out)
++{
++    struct dcomp_rect_clip *clip = clip_from_iface(iface);
++
++    *out = NULL;
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDCompositionRectangleClip) ||
++        IsEqualIID(riid, &IID_IDCompositionClip))
++        *out = &clip->IDCompositionRectangleClip_iface;
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&clip->ref);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE clip_AddRef(IDCompositionRectangleClip *iface)
++{
++    return InterlockedIncrement(&clip_from_iface(iface)->ref);
++}
++
++static ULONG STDMETHODCALLTYPE clip_Release(IDCompositionRectangleClip *iface)
++{
++    struct dcomp_rect_clip *clip = clip_from_iface(iface);
++    ULONG ref = InterlockedDecrement(&clip->ref);
++
++    if (!ref) free(clip);
++    return ref;
++}
++
++#define CLIP_ANIM(name)                                                     \
++static HRESULT STDMETHODCALLTYPE clip_##name(IDCompositionRectangleClip *iface, \
++        IDCompositionAnimation *animation)                              \
++{                                                                       \
++    FIXME("animations are not supported yet\n");                        \
++    return E_NOTIMPL;                                                   \
++}
++#define CLIP_VALUE(name, field)                                             \
++static HRESULT STDMETHODCALLTYPE clip_##name(IDCompositionRectangleClip *iface, float value) \
++{                                                                       \
++    clip_from_iface(iface)->field = value;                              \
++    return S_OK;                                                        \
++}
++
++CLIP_ANIM(SetLeftAnimation)     CLIP_VALUE(SetLeft, left)
++CLIP_ANIM(SetTopAnimation)      CLIP_VALUE(SetTop, top)
++CLIP_ANIM(SetRightAnimation)    CLIP_VALUE(SetRight, right)
++CLIP_ANIM(SetBottomAnimation)   CLIP_VALUE(SetBottom, bottom)
++
++CLIP_ANIM(SetTopLeftRadiusXAnimation)      CLIP_VALUE(SetTopLeftRadiusX, tlx)
++CLIP_ANIM(SetTopLeftRadiusYAnimation)      CLIP_VALUE(SetTopLeftRadiusY, tly)
++CLIP_ANIM(SetTopRightRadiusXAnimation)     CLIP_VALUE(SetTopRightRadiusX, trx)
++CLIP_ANIM(SetTopRightRadiusYAnimation)     CLIP_VALUE(SetTopRightRadiusY, try_)
++CLIP_ANIM(SetBottomLeftRadiusXAnimation)   CLIP_VALUE(SetBottomLeftRadiusX, blx)
++CLIP_ANIM(SetBottomLeftRadiusYAnimation)   CLIP_VALUE(SetBottomLeftRadiusY, bly)
++CLIP_ANIM(SetBottomRightRadiusXAnimation)  CLIP_VALUE(SetBottomRightRadiusX, brx)
++CLIP_ANIM(SetBottomRightRadiusYAnimation)  CLIP_VALUE(SetBottomRightRadiusY, bry)
++
++static const IDCompositionRectangleClipVtbl dcomp_rect_clip_vtbl =
++{
++    clip_QueryInterface,
++    clip_AddRef,
++    clip_Release,
++    clip_SetLeftAnimation,  clip_SetLeft,
++    clip_SetTopAnimation,   clip_SetTop,
++    clip_SetRightAnimation, clip_SetRight,
++    clip_SetBottomAnimation, clip_SetBottom,
++    clip_SetTopLeftRadiusXAnimation,     clip_SetTopLeftRadiusX,
++    clip_SetTopLeftRadiusYAnimation,     clip_SetTopLeftRadiusY,
++    clip_SetTopRightRadiusXAnimation,    clip_SetTopRightRadiusX,
++    clip_SetTopRightRadiusYAnimation,    clip_SetTopRightRadiusY,
++    clip_SetBottomLeftRadiusXAnimation,  clip_SetBottomLeftRadiusX,
++    clip_SetBottomLeftRadiusYAnimation,  clip_SetBottomLeftRadiusY,
++    clip_SetBottomRightRadiusXAnimation, clip_SetBottomRightRadiusX,
++    clip_SetBottomRightRadiusYAnimation, clip_SetBottomRightRadiusY,
++};
++
++HRESULT dcomp_rect_clip_create(IDCompositionRectangleClip **out)
++{
++    struct dcomp_rect_clip *clip;
++
++    if (!(clip = calloc(1, sizeof(*clip)))) return E_OUTOFMEMORY;
++
++    clip->IDCompositionRectangleClip_iface.lpVtbl = &dcomp_rect_clip_vtbl;
++    clip->ref = 1;
++    clip->left = clip->top = 0.0f;
++    clip->right = clip->bottom = 0.0f;
++
++    *out = &clip->IDCompositionRectangleClip_iface;
++    return S_OK;
++}
+diff --git a/dlls/dcomp/surface.c b/dlls/dcomp/surface.c
+new file mode 100644
+index 0000000000..56dc161f2f
+--- /dev/null
++++ b/dlls/dcomp/surface.c
+@@ -0,0 +1,363 @@
++/*
++ * DirectComposition surfaces
++ *
++ * Copyright 2026 Adobe Wine Lab
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++
++#include "dcomp_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
++
++static void surface_destroy(struct dcomp_surface *surface)
++{
++    if (surface->dxgi_surface) surface->dxgi_surface->lpVtbl->Release(surface->dxgi_surface);
++    if (surface->texture) surface->texture->lpVtbl->Release(surface->texture);
++    (&surface->device->IDCompositionDevice3_iface)->lpVtbl->Release(&surface->device->IDCompositionDevice3_iface);
++    free(surface);
++}
++
++static HRESULT surface_query_interface(struct dcomp_surface *surface, REFIID riid, void **out)
++{
++    *out = NULL;
++
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDCompositionSurface))
++        *out = &surface->IDCompositionSurface_iface;
++    else if (IsEqualIID(riid, &IID_IDCompositionVirtualSurface))
++        *out = &surface->IDCompositionVirtualSurface_iface;
++
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&surface->ref);
++    return S_OK;
++}
++
++/* Create the backing texture. Surfaces are only drawable when the device was
++ * given a rendering device, which is how a caller obtains one on Windows too. */
++static HRESULT surface_ensure_texture(struct dcomp_surface *surface)
++{
++    D3D11_TEXTURE2D_DESC desc;
++    HRESULT hr;
++
++    if (surface->texture) return S_OK;
++
++    if (!surface->device->d3d_device)
++    {
++        WARN("no rendering device was supplied to the composition device\n");
++        return E_NOTIMPL;
++    }
++    if (!surface->width || !surface->height) return E_INVALIDARG;
++
++    memset(&desc, 0, sizeof(desc));
++    desc.Width = surface->width;
++    desc.Height = surface->height;
++    desc.MipLevels = 1;
++    desc.ArraySize = 1;
++    desc.Format = surface->pixel_format;
++    desc.SampleDesc.Count = 1;
++    desc.Usage = D3D11_USAGE_DEFAULT;
++    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
++    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
++
++    hr = surface->device->d3d_device->lpVtbl->CreateTexture2D(surface->device->d3d_device, &desc, NULL, &surface->texture);
++    if (FAILED(hr))
++    {
++        WARN("CreateTexture2D failed, hr %#lx\n", hr);
++        return hr;
++    }
++
++    hr = surface->texture->lpVtbl->QueryInterface(surface->texture, &IID_IDXGISurface,
++                                        (void **)&surface->dxgi_surface);
++    if (FAILED(hr))
++    {
++        WARN("failed to get IDXGISurface, hr %#lx\n", hr);
++        surface->texture->lpVtbl->Release(surface->texture);
++        surface->texture = NULL;
++        return hr;
++    }
++
++    TRACE("created %ux%u surface texture\n", surface->width, surface->height);
++    return S_OK;
++}
++
++#define GEN_SURFACE(NAME, IF, CONV)                                                                     \
++static HRESULT STDMETHODCALLTYPE NAME##_QueryInterface(IF *iface, REFIID riid, void **out)          \
++{                                                                                                 \
++    struct dcomp_surface *surface = CONV(iface);                                                  \
++    TRACE("iface %p, riid %s, out %p.\n", iface, debugstr_guid(riid), out);                       \
++    return surface_query_interface(surface, riid, out);                                           \
++}                                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_AddRef(IF *iface)                                             \
++{                                                                                                 \
++    return InterlockedIncrement(&CONV(iface)->ref);                                               \
++}                                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_Release(IF *iface)                                            \
++{                                                                                                 \
++    struct dcomp_surface *surface = CONV(iface);                                                  \
++    ULONG ref = InterlockedDecrement(&surface->ref);                                              \
++    if (!ref) surface_destroy(surface);                                                           \
++    return ref;                                                                                   \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_BeginDraw(IF *iface, const RECT *rect, REFIID iid,          \
++        void **object, POINT *offset)                                                             \
++{                                                                                                 \
++    struct dcomp_surface *surface = CONV(iface);                                                  \
++    HRESULT hr;                                                                                   \
++    TRACE("iface %p, rect %p, iid %s, object %p, offset %p.\n", iface, rect,                      \
++          debugstr_guid(iid), object, offset);                                                    \
++    if (!object || !offset) return E_INVALIDARG;                                                  \
++    if (surface->drawing) return E_NOT_VALID_STATE;                                               \
++    if (FAILED(hr = surface_ensure_texture(surface))) return hr;                                  \
++    if (FAILED(hr = surface->texture->lpVtbl->QueryInterface(surface->texture, iid, object))) return hr;    \
++    offset->x = 0;                                                                                \
++    offset->y = 0;                                                                                \
++    surface->drawing = TRUE;                                                                      \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_EndDraw(IF *iface)                                          \
++{                                                                                                 \
++    struct dcomp_surface *surface = CONV(iface);                                                  \
++    TRACE("iface %p.\n", iface);                                                                  \
++    if (!surface->drawing) return E_NOT_VALID_STATE;                                              \
++    surface->drawing = FALSE;                                                                     \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SuspendDraw(IF *iface)                                      \
++{                                                                                                 \
++    struct dcomp_surface *surface = CONV(iface);                                                  \
++    TRACE("iface %p.\n", iface);                                                                  \
++    if (!surface->drawing) return E_NOT_VALID_STATE;                                              \
++    surface->drawing = FALSE;                                                                     \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_ResumeDraw(IF *iface)                                       \
++{                                                                                                 \
++    struct dcomp_surface *surface = CONV(iface);                                                  \
++    TRACE("iface %p.\n", iface);                                                                  \
++    if (!surface->texture) return E_NOT_VALID_STATE;                                              \
++    surface->drawing = TRUE;                                                                      \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_Scroll(IF *iface, const RECT *scroll, const RECT *clip,     \
++        int offset_x, int offset_y)                                                               \
++{                                                                                                 \
++    FIXME("surface scrolling is not supported yet\n");                                            \
++    return E_NOTIMPL;                                                                             \
++}
++
++GEN_SURFACE(dcomp_surface1, IDCompositionSurface, surface_from_IDCompositionSurface)
++
++#define GEN_VIRTUAL_SURFACE(NAME, IF, CONV)                                                             \
++static HRESULT STDMETHODCALLTYPE NAME##_QueryInterface(IF *iface, REFIID riid, void **out)          \
++{                                                                                                 \
++    return surface_query_interface(CONV(iface), riid, out);                                       \
++}                                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_AddRef(IF *iface)                                             \
++{                                                                                                 \
++    return InterlockedIncrement(&CONV(iface)->ref);                                               \
++}                                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_Release(IF *iface)                                            \
++{                                                                                                 \
++    struct dcomp_surface *surface = CONV(iface);                                                  \
++    ULONG ref = InterlockedDecrement(&surface->ref);                                              \
++    if (!ref) surface_destroy(surface);                                                           \
++    return ref;                                                                                   \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_BeginDraw(IF *iface, const RECT *rect, REFIID iid,          \
++        void **object, POINT *offset)                                                             \
++{                                                                                                 \
++    return dcomp_surface1_BeginDraw(&CONV(iface)->IDCompositionSurface_iface, rect, iid,    \
++                                          object, offset);                                        \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_EndDraw(IF *iface)                                          \
++{                                                                                                 \
++    return dcomp_surface1_EndDraw(&CONV(iface)->IDCompositionSurface_iface);                \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SuspendDraw(IF *iface)                                      \
++{                                                                                                 \
++    return dcomp_surface1_SuspendDraw(&CONV(iface)->IDCompositionSurface_iface);            \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_ResumeDraw(IF *iface)                                       \
++{                                                                                                 \
++    return dcomp_surface1_ResumeDraw(&CONV(iface)->IDCompositionSurface_iface);             \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_Scroll(IF *iface, const RECT *scroll, const RECT *clip,     \
++        int offset_x, int offset_y)                                                               \
++{                                                                                                 \
++    return dcomp_surface1_Scroll(&CONV(iface)->IDCompositionSurface_iface, scroll, clip,    \
++                                       offset_x, offset_y);                                       \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_Resize(IF *iface, UINT width, UINT height)                  \
++{                                                                                                 \
++    struct dcomp_surface *surface = CONV(iface);                                                  \
++    TRACE("iface %p, width %u, height %u.\n", iface, width, height);                              \
++    if (!width || !height) return E_INVALIDARG;                                                   \
++    if (surface->drawing) return E_NOT_VALID_STATE;                                               \
++    if (width == surface->width && height == surface->height) return S_OK;                        \
++    if (surface->dxgi_surface) { surface->dxgi_surface->lpVtbl->Release(surface->dxgi_surface); surface->dxgi_surface = NULL; } \
++    if (surface->texture) { surface->texture->lpVtbl->Release(surface->texture); surface->texture = NULL; } \
++    surface->width = width;                                                                       \
++    surface->height = height;                                                                     \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_Trim(IF *iface, const RECT *rectangles, UINT count)         \
++{                                                                                                 \
++    FIXME("virtual surface trimming is not supported yet\n");                                     \
++    return E_NOTIMPL;                                                                             \
++}
++
++GEN_VIRTUAL_SURFACE(dcomp_vsurface, IDCompositionVirtualSurface, surface_from_IDCompositionVirtualSurface)
++
++static const IDCompositionSurfaceVtbl dcomp_surface_vtbl =
++{
++    dcomp_surface1_QueryInterface,
++    dcomp_surface1_AddRef,
++    dcomp_surface1_Release,
++    dcomp_surface1_BeginDraw,
++    dcomp_surface1_EndDraw,
++    dcomp_surface1_SuspendDraw,
++    dcomp_surface1_ResumeDraw,
++    dcomp_surface1_Scroll,
++};
++
++static const IDCompositionVirtualSurfaceVtbl dcomp_virtual_surface_vtbl =
++{
++    dcomp_vsurface_QueryInterface,
++    dcomp_vsurface_AddRef,
++    dcomp_vsurface_Release,
++    dcomp_vsurface_BeginDraw,
++    dcomp_vsurface_EndDraw,
++    dcomp_vsurface_SuspendDraw,
++    dcomp_vsurface_ResumeDraw,
++    dcomp_vsurface_Scroll,
++    dcomp_vsurface_Resize,
++    dcomp_vsurface_Trim,
++};
++
++HRESULT dcomp_surface_create(struct dcomp_device *device, UINT width, UINT height,
++                             DXGI_FORMAT format, DXGI_ALPHA_MODE alpha_mode,
++                             BOOL virtual_surface, void **out)
++{
++    struct dcomp_surface *surface;
++
++    if (!out) return E_INVALIDARG;
++    if (!width || !height) return E_INVALIDARG;
++
++    if (!(surface = calloc(1, sizeof(*surface)))) return E_OUTOFMEMORY;
++
++    surface->IDCompositionSurface_iface.lpVtbl = &dcomp_surface_vtbl;
++    surface->IDCompositionVirtualSurface_iface.lpVtbl = &dcomp_virtual_surface_vtbl;
++    surface->ref = 1;
++    surface->device = device;
++    surface->width = width;
++    surface->height = height;
++    surface->pixel_format = format;
++    surface->alpha_mode = alpha_mode;
++    (&device->IDCompositionDevice3_iface)->lpVtbl->AddRef(&device->IDCompositionDevice3_iface);
++
++    *out = virtual_surface ? (void *)&surface->IDCompositionVirtualSurface_iface
++                           : (void *)&surface->IDCompositionSurface_iface;
++
++    TRACE("created surface %p, %ux%u, format %u, virtual %d\n",
++          surface, width, height, format, virtual_surface);
++    return S_OK;
++}
++
++/* --- surface factory --------------------------------------------------- */
++
++static HRESULT STDMETHODCALLTYPE factory_QueryInterface(IDCompositionSurfaceFactory *iface, REFIID riid, void **out)
++{
++    struct dcomp_surface_factory *factory = CONTAINING_RECORD(iface, struct dcomp_surface_factory,
++                                                              IDCompositionSurfaceFactory_iface);
++
++    *out = NULL;
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDCompositionSurfaceFactory))
++        *out = &factory->IDCompositionSurfaceFactory_iface;
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&factory->ref);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE factory_AddRef(IDCompositionSurfaceFactory *iface)
++{
++    struct dcomp_surface_factory *factory = CONTAINING_RECORD(iface, struct dcomp_surface_factory,
++                                                              IDCompositionSurfaceFactory_iface);
++    return InterlockedIncrement(&factory->ref);
++}
++
++static ULONG STDMETHODCALLTYPE factory_Release(IDCompositionSurfaceFactory *iface)
++{
++    struct dcomp_surface_factory *factory = CONTAINING_RECORD(iface, struct dcomp_surface_factory,
++                                                              IDCompositionSurfaceFactory_iface);
++    ULONG ref = InterlockedDecrement(&factory->ref);
++
++    if (!ref)
++    {
++        (&factory->device->IDCompositionDevice3_iface)->lpVtbl->Release(&factory->device->IDCompositionDevice3_iface);
++        free(factory);
++    }
++    return ref;
++}
++
++static HRESULT STDMETHODCALLTYPE factory_CreateSurface(IDCompositionSurfaceFactory *iface, UINT width,
++        UINT height, DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode, IDCompositionSurface **surface)
++{
++    struct dcomp_surface_factory *factory = CONTAINING_RECORD(iface, struct dcomp_surface_factory,
++                                                              IDCompositionSurfaceFactory_iface);
++    return dcomp_surface_create(factory->device, width, height, pixel_format, alpha_mode, FALSE,
++                                (void **)surface);
++}
++
++static HRESULT STDMETHODCALLTYPE factory_CreateVirtualSurface(IDCompositionSurfaceFactory *iface,
++        UINT width, UINT height, DXGI_FORMAT pixel_format, DXGI_ALPHA_MODE alpha_mode,
++        IDCompositionVirtualSurface **surface)
++{
++    struct dcomp_surface_factory *factory = CONTAINING_RECORD(iface, struct dcomp_surface_factory,
++                                                              IDCompositionSurfaceFactory_iface);
++    return dcomp_surface_create(factory->device, width, height, pixel_format, alpha_mode, TRUE,
++                                (void **)surface);
++}
++
++static const IDCompositionSurfaceFactoryVtbl dcomp_surface_factory_vtbl =
++{
++    factory_QueryInterface,
++    factory_AddRef,
++    factory_Release,
++    factory_CreateSurface,
++    factory_CreateVirtualSurface,
++};
++
++HRESULT dcomp_surface_factory_create(struct dcomp_device *device, IDCompositionSurfaceFactory **out)
++{
++    struct dcomp_surface_factory *factory;
++
++    if (!(factory = calloc(1, sizeof(*factory)))) return E_OUTOFMEMORY;
++
++    factory->IDCompositionSurfaceFactory_iface.lpVtbl = &dcomp_surface_factory_vtbl;
++    factory->ref = 1;
++    factory->device = device;
++    (&device->IDCompositionDevice3_iface)->lpVtbl->AddRef(&device->IDCompositionDevice3_iface);
++
++    *out = &factory->IDCompositionSurfaceFactory_iface;
++    return S_OK;
++}
+diff --git a/dlls/dcomp/target.c b/dlls/dcomp/target.c
+new file mode 100644
+index 0000000000..c2ab3e07b8
+--- /dev/null
++++ b/dlls/dcomp/target.c
+@@ -0,0 +1,496 @@
++/*
++ * DirectComposition target and visual
++ *
++ * Copyright 2026 Adobe Wine Lab
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++
++#include "dcomp.h"
++
++#include "dcomp_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
++
++/* The v1 methods are generated further down but the target code above them
++ * refers to them, so they are declared here. */
++static ULONG STDMETHODCALLTYPE dcomp_visual1_AddRef(IDCompositionVisual *iface);
++static ULONG STDMETHODCALLTYPE dcomp_visual1_Release(IDCompositionVisual *iface);
++
++/* The v1 methods are generated further down but are used by the target code
++ * above them, so their references are declared here. */
++static ULONG STDMETHODCALLTYPE dcomp_visual1_AddRef(IDCompositionVisual *iface);
++static ULONG STDMETHODCALLTYPE dcomp_visual1_Release(IDCompositionVisual *iface);
++
++/* --- target ------------------------------------------------------------ */
++
++static HRESULT STDMETHODCALLTYPE target_QueryInterface(IDCompositionTarget *iface, REFIID riid, void **out)
++{
++    struct dcomp_target *target = target_from_IDCompositionTarget(iface);
++
++    TRACE("iface %p, riid %s, out %p.\n", iface, debugstr_guid(riid), out);
++
++    *out = NULL;
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDCompositionTarget))
++        *out = &target->IDCompositionTarget_iface;
++
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&target->ref);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE target_AddRef(IDCompositionTarget *iface)
++{
++    struct dcomp_target *target = target_from_IDCompositionTarget(iface);
++    return InterlockedIncrement(&target->ref);
++}
++
++static ULONG STDMETHODCALLTYPE target_Release(IDCompositionTarget *iface)
++{
++    struct dcomp_target *target = target_from_IDCompositionTarget(iface);
++    ULONG ref = InterlockedDecrement(&target->ref);
++
++    if (!ref)
++    {
++        if (target->root) dcomp_visual1_Release(target->root);
++        (&target->device->IDCompositionDevice3_iface)->lpVtbl->Release(&target->device->IDCompositionDevice3_iface);
++        free(target);
++    }
++    return ref;
++}
++
++static HRESULT STDMETHODCALLTYPE target_SetRoot(IDCompositionTarget *iface, IDCompositionVisual *visual)
++{
++    struct dcomp_target *target = target_from_IDCompositionTarget(iface);
++
++    TRACE("iface %p, visual %p.\n", iface, visual);
++
++    if (visual) dcomp_visual1_AddRef(visual);
++    if (target->root) dcomp_visual1_Release(target->root);
++    target->root = visual;
++
++    return S_OK;
++}
++
++static const IDCompositionTargetVtbl dcomp_target_vtbl =
++{
++    target_QueryInterface,
++    target_AddRef,
++    target_Release,
++    target_SetRoot,
++};
++
++HRESULT dcomp_target_create(struct dcomp_device *device, IDCompositionTarget **out)
++{
++    struct dcomp_target *target;
++
++    if (!(target = calloc(1, sizeof(*target)))) return E_OUTOFMEMORY;
++
++    target->IDCompositionTarget_iface.lpVtbl = &dcomp_target_vtbl;
++    target->ref = 1;
++    target->device = device;
++    (&device->IDCompositionDevice3_iface)->lpVtbl->AddRef(&device->IDCompositionDevice3_iface);
++
++    TRACE("created target %p.\n", target);
++    *out = &target->IDCompositionTarget_iface;
++    return S_OK;
++}
++
++/* --- visual ------------------------------------------------------------ */
++
++static HRESULT visual_query_interface(struct dcomp_visual *visual, REFIID riid, void **out)
++{
++    *out = NULL;
++
++    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDCompositionVisual))
++        *out = &visual->IDCompositionVisual_iface;
++    else if (IsEqualIID(riid, &IID_IDCompositionVisual2))
++        *out = &visual->IDCompositionVisual2_iface;
++
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&visual->ref);
++    return S_OK;
++}
++
++#define GEN_VISUAL(NAME, IF, CONV)                                                                     \
++static HRESULT STDMETHODCALLTYPE NAME##_QueryInterface(IF *iface, REFIID riid, void **out)          \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, riid %s, out %p.\n", iface, debugstr_guid(riid), out);                       \
++    return visual_query_interface(visual, riid, out);                                             \
++}                                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_AddRef(IF *iface)                                             \
++{                                                                                                 \
++    return InterlockedIncrement(&CONV(iface)->ref);                                               \
++}                                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_Release(IF *iface)                                            \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    ULONG ref = InterlockedDecrement(&visual->ref);                                               \
++    if (!ref)                                                                                     \
++    {                                                                                             \
++        struct dcomp_visual_child *child, *next;                                                  \
++        LIST_FOR_EACH_ENTRY_SAFE(child, next, &visual->children, struct dcomp_visual_child, entry) \
++        {                                                                                         \
++            list_remove(&child->entry);                                                           \
++            dcomp_visual1_Release(child->visual);                                           \
++            free(child);                                                                          \
++        }                                                                                         \
++        if (visual->content) visual->content->lpVtbl->Release(visual->content);                                   \
++        if (visual->transform) visual->transform->lpVtbl->Release(visual->transform);                 \
++        if (visual->transform_parent) dcomp_visual1_Release(visual->transform_parent);      \
++        if (visual->effect) visual->effect->lpVtbl->Release(visual->effect);                          \
++        if (visual->clip) visual->clip->lpVtbl->Release(visual->clip);                                \
++        free(visual);                                                                             \
++    }                                                                                             \
++    return ref;                                                                                   \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOffsetXAnimation(IF *iface, IDCompositionAnimation *animation) \
++{                                                                                                 \
++    FIXME("animations are not supported yet\n");                                                  \
++    return E_NOTIMPL;                                                                             \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOffsetX(IF *iface, float offset_x)                       \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, offset_x %.8e.\n", iface, offset_x);                                         \
++    visual->offset_x = offset_x;                                                                  \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOffsetYAnimation(IF *iface, IDCompositionAnimation *animation) \
++{                                                                                                 \
++    FIXME("animations are not supported yet\n");                                                  \
++    return E_NOTIMPL;                                                                             \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOffsetY(IF *iface, float offset_y)                       \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, offset_y %.8e.\n", iface, offset_y);                                         \
++    visual->offset_y = offset_y;                                                                  \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetTransformObject(IF *iface, IDCompositionTransform *transform) \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, transform %p.\n", iface, transform);                                         \
++    if (transform) transform->lpVtbl->AddRef(transform);                                      \
++    if (visual->transform) visual->transform->lpVtbl->Release(visual->transform);                     \
++    visual->transform = transform;                                                                \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetTransform(IF *iface, const D2D_MATRIX_3X2_F *matrix)     \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, matrix %p.\n", iface, matrix);                                               \
++    if (!matrix) return E_INVALIDARG;                                                             \
++    visual->matrix = *matrix;                                                                     \
++    visual->has_matrix = TRUE;                                                                    \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetTransformParent(IF *iface, IDCompositionVisual *parent)  \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, parent %p.\n", iface, parent);                                               \
++    if (parent) dcomp_visual1_AddRef(parent);                                               \
++    if (visual->transform_parent) dcomp_visual1_Release(visual->transform_parent);          \
++    visual->transform_parent = parent;                                                            \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetEffect(IF *iface, IDCompositionEffect *effect)           \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, effect %p.\n", iface, effect);                                               \
++    if (effect) effect->lpVtbl->AddRef(effect);                                               \
++    if (visual->effect) visual->effect->lpVtbl->Release(visual->effect);                              \
++    visual->effect = effect;                                                                      \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetBitmapInterpolationMode(IF *iface,                       \
++        enum DCOMPOSITION_BITMAP_INTERPOLATION_MODE mode)                                         \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, mode %u.\n", iface, mode);                                                   \
++    visual->interpolation_mode = mode;                                                            \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetBorderMode(IF *iface, enum DCOMPOSITION_BORDER_MODE mode) \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, mode %u.\n", iface, mode);                                                   \
++    visual->border_mode = mode;                                                                   \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetClipObject(IF *iface, IDCompositionClip *clip)           \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, clip %p.\n", iface, clip);                                                   \
++    if (clip) clip->lpVtbl->AddRef(clip);                                                     \
++    if (visual->clip) visual->clip->lpVtbl->Release(visual->clip);                                    \
++    visual->clip = clip;                                                                          \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetClip(IF *iface, const D2D_RECT_F *rect)                  \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, rect %p.\n", iface, rect);                                                   \
++    if (!rect) return E_INVALIDARG;                                                               \
++    visual->clip_rect = *rect;                                                                    \
++    visual->has_clip_rect = TRUE;                                                                 \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetContent(IF *iface, IUnknown *content)                    \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, content %p.\n", iface, content);                                             \
++    if (content) content->lpVtbl->AddRef(content);                                                        \
++    if (visual->content) visual->content->lpVtbl->Release(visual->content);                                       \
++    visual->content = content;                                                                    \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_AddVisual(IF *iface, IDCompositionVisual *child, BOOL insert_above, \
++        IDCompositionVisual *reference)                                                           \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    struct dcomp_visual_child *entry;                                                             \
++    TRACE("iface %p, child %p, insert_above %d, reference %p.\n", iface, child, insert_above, reference); \
++    if (!child) return E_INVALIDARG;                                                              \
++    if (child == iface) return E_INVALIDARG;                                                      \
++    if (!(entry = calloc(1, sizeof(*entry)))) return E_OUTOFMEMORY;                               \
++    dcomp_visual1_AddRef(child);                                                            \
++    entry->visual = child;                                                                        \
++    list_add_tail(&visual->children, &entry->entry);                                              \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_RemoveVisual(IF *iface, IDCompositionVisual *child)         \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    struct dcomp_visual_child *entry;                                                             \
++    TRACE("iface %p, child %p.\n", iface, child);                                                 \
++    LIST_FOR_EACH_ENTRY(entry, &visual->children, struct dcomp_visual_child, entry)               \
++    {                                                                                             \
++        if (entry->visual == child)                                                               \
++        {                                                                                         \
++            list_remove(&entry->entry);                                                           \
++            dcomp_visual1_Release(entry->visual);                                           \
++            free(entry);                                                                          \
++            return S_OK;                                                                          \
++        }                                                                                         \
++    }                                                                                             \
++    return E_INVALIDARG;                                                                          \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_RemoveAllVisuals(IF *iface)                                 \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    struct dcomp_visual_child *entry, *next;                                                      \
++    TRACE("iface %p.\n", iface);                                                                  \
++    LIST_FOR_EACH_ENTRY_SAFE(entry, next, &visual->children, struct dcomp_visual_child, entry)     \
++    {                                                                                             \
++        list_remove(&entry->entry);                                                               \
++        dcomp_visual1_Release(entry->visual);                                               \
++        free(entry);                                                                              \
++    }                                                                                             \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetCompositeMode(IF *iface, enum DCOMPOSITION_COMPOSITE_MODE mode) \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, mode %u.\n", iface, mode);                                                   \
++    visual->composite_mode = mode;                                                                \
++    return S_OK;                                                                                  \
++}
++
++GEN_VISUAL(dcomp_visual1, IDCompositionVisual, visual_from_IDCompositionVisual)
++
++#define GEN_VISUAL2_EXTRA(NAME, IF, CONV)                                                              \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOpacityMode(IF *iface, enum DCOMPOSITION_OPACITY_MODE mode) \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, mode %u.\n", iface, mode);                                                   \
++    visual->opacity_mode = mode;                                                                  \
++    return S_OK;                                                                                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetBackFaceVisibility(IF *iface,                            \
++        enum DCOMPOSITION_BACKFACE_VISIBILITY visibility)                                         \
++{                                                                                                 \
++    struct dcomp_visual *visual = CONV(iface);                                                    \
++    TRACE("iface %p, visibility %u.\n", iface, visibility);                                       \
++    visual->backface_visibility = visibility;                                                     \
++    return S_OK;                                                                                  \
++}
++
++/* The v2 vtable repeats every v1 method with the derived interface type, so
++ * the v1 set is generated again for it. */
++#define GEN_VISUAL_V2(NAME, IF, CONV)                                                                  \
++static HRESULT STDMETHODCALLTYPE NAME##_QueryInterface(IF *iface, REFIID riid, void **out)          \
++{                                                                                                 \
++    return visual_query_interface(CONV(iface), riid, out);                                        \
++}                                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_AddRef(IF *iface)                                             \
++{                                                                                                 \
++    return InterlockedIncrement(&CONV(iface)->ref);                                               \
++}                                                                                                 \
++static ULONG STDMETHODCALLTYPE NAME##_Release(IF *iface)                                            \
++{                                                                                                 \
++    return dcomp_visual1_Release(&CONV(iface)->IDCompositionVisual_iface);                  \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOffsetXAnimation(IF *iface, IDCompositionAnimation *animation) \
++{                                                                                                 \
++    return dcomp_visual1_SetOffsetXAnimation(&CONV(iface)->IDCompositionVisual_iface, animation); \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOffsetX(IF *iface, float v)                              \
++{                                                                                                 \
++    return dcomp_visual1_SetOffsetX(&CONV(iface)->IDCompositionVisual_iface, v);            \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOffsetYAnimation(IF *iface, IDCompositionAnimation *animation) \
++{                                                                                                 \
++    return dcomp_visual1_SetOffsetYAnimation(&CONV(iface)->IDCompositionVisual_iface, animation); \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetOffsetY(IF *iface, float v)                              \
++{                                                                                                 \
++    return dcomp_visual1_SetOffsetY(&CONV(iface)->IDCompositionVisual_iface, v);            \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetTransformObject(IF *iface, IDCompositionTransform *transform) \
++{                                                                                                 \
++    return dcomp_visual1_SetTransformObject(&CONV(iface)->IDCompositionVisual_iface, transform); \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetTransform(IF *iface, const D2D_MATRIX_3X2_F *matrix)     \
++{                                                                                                 \
++    return dcomp_visual1_SetTransform(&CONV(iface)->IDCompositionVisual_iface, matrix);    \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetTransformParent(IF *iface, IDCompositionVisual *parent)  \
++{                                                                                                 \
++    return dcomp_visual1_SetTransformParent(&CONV(iface)->IDCompositionVisual_iface, parent); \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetEffect(IF *iface, IDCompositionEffect *effect)           \
++{                                                                                                 \
++    return dcomp_visual1_SetEffect(&CONV(iface)->IDCompositionVisual_iface, effect);        \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetBitmapInterpolationMode(IF *iface,                       \
++        enum DCOMPOSITION_BITMAP_INTERPOLATION_MODE mode)                                         \
++{                                                                                                 \
++    return dcomp_visual1_SetBitmapInterpolationMode(&CONV(iface)->IDCompositionVisual_iface, mode); \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetBorderMode(IF *iface, enum DCOMPOSITION_BORDER_MODE mode) \
++{                                                                                                 \
++    return dcomp_visual1_SetBorderMode(&CONV(iface)->IDCompositionVisual_iface, mode);      \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetClipObject(IF *iface, IDCompositionClip *clip)           \
++{                                                                                                 \
++    return dcomp_visual1_SetClipObject(&CONV(iface)->IDCompositionVisual_iface, clip);      \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetClip(IF *iface, const D2D_RECT_F *rect)                  \
++{                                                                                                 \
++    return dcomp_visual1_SetClip(&CONV(iface)->IDCompositionVisual_iface, rect);           \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetContent(IF *iface, IUnknown *content)                    \
++{                                                                                                 \
++    return dcomp_visual1_SetContent(&CONV(iface)->IDCompositionVisual_iface, content);      \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_AddVisual(IF *iface, IDCompositionVisual *child, BOOL insert_above, \
++        IDCompositionVisual *reference)                                                           \
++{                                                                                                 \
++    return dcomp_visual1_AddVisual(&CONV(iface)->IDCompositionVisual_iface, child, insert_above, reference); \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_RemoveVisual(IF *iface, IDCompositionVisual *child)         \
++{                                                                                                 \
++    return dcomp_visual1_RemoveVisual(&CONV(iface)->IDCompositionVisual_iface, child);      \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_RemoveAllVisuals(IF *iface)                                 \
++{                                                                                                 \
++    return dcomp_visual1_RemoveAllVisuals(&CONV(iface)->IDCompositionVisual_iface);         \
++}                                                                                                 \
++static HRESULT STDMETHODCALLTYPE NAME##_SetCompositeMode(IF *iface, enum DCOMPOSITION_COMPOSITE_MODE mode) \
++{                                                                                                 \
++    return dcomp_visual1_SetCompositeMode(&CONV(iface)->IDCompositionVisual_iface, mode);   \
++}
++
++GEN_VISUAL_V2(dcomp_visual2, IDCompositionVisual2, visual_from_IDCompositionVisual2)
++GEN_VISUAL2_EXTRA(dcomp_visual2, IDCompositionVisual2, visual_from_IDCompositionVisual2)
++
++static const IDCompositionVisualVtbl dcomp_visual_vtbl =
++{
++    dcomp_visual1_QueryInterface,
++    dcomp_visual1_AddRef,
++    dcomp_visual1_Release,
++    dcomp_visual1_SetOffsetXAnimation,
++    dcomp_visual1_SetOffsetX,
++    dcomp_visual1_SetOffsetYAnimation,
++    dcomp_visual1_SetOffsetY,
++    dcomp_visual1_SetTransformObject,
++    dcomp_visual1_SetTransform,
++    dcomp_visual1_SetTransformParent,
++    dcomp_visual1_SetEffect,
++    dcomp_visual1_SetBitmapInterpolationMode,
++    dcomp_visual1_SetBorderMode,
++    dcomp_visual1_SetClipObject,
++    dcomp_visual1_SetClip,
++    dcomp_visual1_SetContent,
++    dcomp_visual1_AddVisual,
++    dcomp_visual1_RemoveVisual,
++    dcomp_visual1_RemoveAllVisuals,
++    dcomp_visual1_SetCompositeMode,
++};
++
++static const IDCompositionVisual2Vtbl dcomp_visual2_vtbl =
++{
++    dcomp_visual2_QueryInterface,
++    dcomp_visual2_AddRef,
++    dcomp_visual2_Release,
++    dcomp_visual2_SetOffsetXAnimation,
++    dcomp_visual2_SetOffsetX,
++    dcomp_visual2_SetOffsetYAnimation,
++    dcomp_visual2_SetOffsetY,
++    dcomp_visual2_SetTransformObject,
++    dcomp_visual2_SetTransform,
++    dcomp_visual2_SetTransformParent,
++    dcomp_visual2_SetEffect,
++    dcomp_visual2_SetBitmapInterpolationMode,
++    dcomp_visual2_SetBorderMode,
++    dcomp_visual2_SetClipObject,
++    dcomp_visual2_SetClip,
++    dcomp_visual2_SetContent,
++    dcomp_visual2_AddVisual,
++    dcomp_visual2_RemoveVisual,
++    dcomp_visual2_RemoveAllVisuals,
++    dcomp_visual2_SetCompositeMode,
++    dcomp_visual2_SetOpacityMode,
++    dcomp_visual2_SetBackFaceVisibility,
++};
++
++HRESULT dcomp_visual_create(struct dcomp_device *device, BOOL want_v2, void **out)
++{
++    struct dcomp_visual *visual;
++
++    if (!(visual = calloc(1, sizeof(*visual)))) return E_OUTOFMEMORY;
++
++    visual->IDCompositionVisual_iface.lpVtbl = &dcomp_visual_vtbl;
++    visual->IDCompositionVisual2_iface.lpVtbl = &dcomp_visual2_vtbl;
++    visual->ref = 1;
++    visual->device = device;
++    list_init(&visual->children);
++
++    *out = want_v2 ? (void *)&visual->IDCompositionVisual2_iface : (void *)&visual->IDCompositionVisual_iface;
++
++    TRACE("created visual %p (v2 %d).\n", visual, want_v2);
++    return S_OK;
++}
+diff --git a/dlls/dcomp/transform.c b/dlls/dcomp/transform.c
+new file mode 100644
+index 0000000000..927339a523
+--- /dev/null
++++ b/dlls/dcomp/transform.c
+@@ -0,0 +1,341 @@
++/*
++ * DirectComposition transforms
++ *
++ * Copyright 2026 Adobe Wine Lab
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++
++#include "dcomp_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
++
++/* A transform object carries one vtable, chosen by kind at creation, so the
++ * interface that was handed out is recovered with the matching accessor. */
++static HRESULT transform_query_interface(struct dcomp_transform *transform, REFIID riid, void **out)
++{
++    *out = NULL;
++
++    if (IsEqualIID(riid, &IID_IUnknown) ||
++        IsEqualIID(riid, &IID_IDCompositionTransform) ||
++        IsEqualIID(riid, &IID_IDCompositionTransform3D) ||
++        IsEqualIID(riid, &IID_IDCompositionEffect))
++    {
++        /* These bases add no methods, so any of the concrete vtables serves. */
++        *out = &transform->IDCompositionTranslateTransform_iface;
++    }
++    else
++    {
++        switch (transform->kind)
++        {
++        case DCOMP_TRANSFORM_TRANSLATE:
++            if (IsEqualIID(riid, &IID_IDCompositionTranslateTransform))
++                *out = &transform->IDCompositionTranslateTransform_iface;
++            break;
++        case DCOMP_TRANSFORM_SCALE:
++            if (IsEqualIID(riid, &IID_IDCompositionScaleTransform))
++                *out = &transform->IDCompositionScaleTransform_iface;
++            break;
++        case DCOMP_TRANSFORM_MATRIX:
++            if (IsEqualIID(riid, &IID_IDCompositionMatrixTransform))
++                *out = &transform->IDCompositionMatrixTransform_iface;
++            break;
++        case DCOMP_TRANSFORM_SKEW:
++            if (IsEqualIID(riid, &IID_IDCompositionSkewTransform))
++                *out = &transform->IDCompositionSkewTransform_iface;
++            break;
++        case DCOMP_TRANSFORM_ROTATE:
++            if (IsEqualIID(riid, &IID_IDCompositionRotateTransform))
++                *out = &transform->IDCompositionRotateTransform_iface;
++            break;
++        default:
++            break;
++        }
++    }
++
++    if (!*out) return E_NOINTERFACE;
++
++    InterlockedIncrement(&transform->ref);
++    return S_OK;
++}
++
++static HRESULT transform_release(struct dcomp_transform *transform)
++{
++    ULONG ref = InterlockedDecrement(&transform->ref);
++
++    if (!ref)
++    {
++        UINT i;
++        for (i = 0; i < transform->member_count; i++)
++            transform->members[i]->lpVtbl->Release(transform->members[i]);
++        free(transform->members);
++        free(transform);
++    }
++    return ref;
++}
++
++#define GEN_TRANSFORM_COMMON(NAME, IF, CONV)                                             \
++static HRESULT STDMETHODCALLTYPE NAME##_QueryInterface(IF *iface, REFIID riid, void **out) \
++{                                                                                        \
++    TRACE("iface %p, riid %s, out %p.\n", iface, debugstr_guid(riid), out);              \
++    return transform_query_interface(CONV(iface), riid, out);                            \
++}                                                                                        \
++static ULONG STDMETHODCALLTYPE NAME##_AddRef(IF *iface)                                  \
++{                                                                                        \
++    return InterlockedIncrement(&CONV(iface)->ref);                                      \
++}                                                                                        \
++static ULONG STDMETHODCALLTYPE NAME##_Release(IF *iface)                                 \
++{                                                                                        \
++    return transform_release(CONV(iface));                                               \
++}
++
++#define ANIM_SETTER(NAME, IF)                                                            \
++static HRESULT STDMETHODCALLTYPE NAME(IF *iface, IDCompositionAnimation *animation)      \
++{                                                                                        \
++    FIXME("animations are not supported yet\n");                                         \
++    return E_NOTIMPL;                                                                    \
++}
++
++/* --- translate --------------------------------------------------------- */
++
++static HRESULT STDMETHODCALLTYPE dcomp_translate_SetOffsetX(IDCompositionTranslateTransform *iface, float offset)
++{
++    transform_from_IDCompositionTranslateTransform(iface)->off_x = offset;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_translate_SetOffsetY(IDCompositionTranslateTransform *iface, float offset)
++{
++    transform_from_IDCompositionTranslateTransform(iface)->off_y = offset;
++    return S_OK;
++}
++GEN_TRANSFORM_COMMON(dcomp_translate, IDCompositionTranslateTransform, transform_from_IDCompositionTranslateTransform)
++ANIM_SETTER(dcomp_translate_SetOffsetXAnimation, IDCompositionTranslateTransform)
++ANIM_SETTER(dcomp_translate_SetOffsetYAnimation, IDCompositionTranslateTransform)
++
++static const IDCompositionTranslateTransformVtbl translate_vtbl =
++{
++    dcomp_translate_QueryInterface,
++    dcomp_translate_AddRef,
++    dcomp_translate_Release,
++    dcomp_translate_SetOffsetXAnimation,
++    dcomp_translate_SetOffsetX,
++    dcomp_translate_SetOffsetYAnimation,
++    dcomp_translate_SetOffsetY,
++};
++
++/* --- scale ------------------------------------------------------------- */
++
++static HRESULT STDMETHODCALLTYPE dcomp_scale_SetScaleX(IDCompositionScaleTransform *iface, float scale)
++{
++    transform_from_IDCompositionScaleTransform(iface)->scale_x = scale;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_scale_SetScaleY(IDCompositionScaleTransform *iface, float scale)
++{
++    transform_from_IDCompositionScaleTransform(iface)->scale_y = scale;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_scale_SetCenterX(IDCompositionScaleTransform *iface, float center)
++{
++    transform_from_IDCompositionScaleTransform(iface)->center_x = center;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_scale_SetCenterY(IDCompositionScaleTransform *iface, float center)
++{
++    transform_from_IDCompositionScaleTransform(iface)->center_y = center;
++    return S_OK;
++}
++GEN_TRANSFORM_COMMON(dcomp_scale, IDCompositionScaleTransform, transform_from_IDCompositionScaleTransform)
++ANIM_SETTER(dcomp_scale_SetScaleXAnimation, IDCompositionScaleTransform)
++ANIM_SETTER(dcomp_scale_SetScaleYAnimation, IDCompositionScaleTransform)
++ANIM_SETTER(dcomp_scale_SetCenterXAnimation, IDCompositionScaleTransform)
++ANIM_SETTER(dcomp_scale_SetCenterYAnimation, IDCompositionScaleTransform)
++
++static const IDCompositionScaleTransformVtbl scale_vtbl =
++{
++    dcomp_scale_QueryInterface,
++    dcomp_scale_AddRef,
++    dcomp_scale_Release,
++    dcomp_scale_SetScaleXAnimation,
++    dcomp_scale_SetScaleX,
++    dcomp_scale_SetScaleYAnimation,
++    dcomp_scale_SetScaleY,
++    dcomp_scale_SetCenterXAnimation,
++    dcomp_scale_SetCenterX,
++    dcomp_scale_SetCenterYAnimation,
++    dcomp_scale_SetCenterY,
++};
++
++/* --- matrix ------------------------------------------------------------ */
++
++static HRESULT STDMETHODCALLTYPE dcomp_matrix_SetMatrix(IDCompositionMatrixTransform *iface, const D2D_MATRIX_3X2_F *matrix)
++{
++    if (!matrix) return E_INVALIDARG;
++
++    transform_from_IDCompositionMatrixTransform(iface)->matrix = *matrix;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_matrix_SetMatrixElement(IDCompositionMatrixTransform *iface,
++                                                               int row, int column, float value)
++{
++    struct dcomp_transform *transform = transform_from_IDCompositionMatrixTransform(iface);
++
++    if (row < 0 || row > 1 || column < 0 || column > 2) return E_INVALIDARG;
++
++    (&transform->matrix.m11)[row * 3 + column] = value;
++    return S_OK;
++}
++GEN_TRANSFORM_COMMON(dcomp_matrix, IDCompositionMatrixTransform, transform_from_IDCompositionMatrixTransform)
++ANIM_SETTER(dcomp_matrix_SetMatrixElementAnimation, IDCompositionMatrixTransform)
++
++static const IDCompositionMatrixTransformVtbl matrix_vtbl =
++{
++    dcomp_matrix_QueryInterface,
++    dcomp_matrix_AddRef,
++    dcomp_matrix_Release,
++    dcomp_matrix_SetMatrix,
++    dcomp_matrix_SetMatrixElementAnimation,
++    dcomp_matrix_SetMatrixElement,
++};
++
++/* --- skew -------------------------------------------------------------- */
++
++static HRESULT STDMETHODCALLTYPE dcomp_skew_SetAngleX(IDCompositionSkewTransform *iface, float angle)
++{
++    transform_from_IDCompositionSkewTransform(iface)->skew_x = angle;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_skew_SetAngleY(IDCompositionSkewTransform *iface, float angle)
++{
++    transform_from_IDCompositionSkewTransform(iface)->skew_y = angle;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_skew_SetCenterX(IDCompositionSkewTransform *iface, float center)
++{
++    transform_from_IDCompositionSkewTransform(iface)->center_x = center;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_skew_SetCenterY(IDCompositionSkewTransform *iface, float center)
++{
++    transform_from_IDCompositionSkewTransform(iface)->center_y = center;
++    return S_OK;
++}
++GEN_TRANSFORM_COMMON(dcomp_skew, IDCompositionSkewTransform, transform_from_IDCompositionSkewTransform)
++ANIM_SETTER(dcomp_skew_SetAngleXAnimation, IDCompositionSkewTransform)
++ANIM_SETTER(dcomp_skew_SetAngleYAnimation, IDCompositionSkewTransform)
++ANIM_SETTER(dcomp_skew_SetCenterXAnimation, IDCompositionSkewTransform)
++ANIM_SETTER(dcomp_skew_SetCenterYAnimation, IDCompositionSkewTransform)
++
++static const IDCompositionSkewTransformVtbl skew_vtbl =
++{
++    dcomp_skew_QueryInterface,
++    dcomp_skew_AddRef,
++    dcomp_skew_Release,
++    dcomp_skew_SetAngleXAnimation,
++    dcomp_skew_SetAngleX,
++    dcomp_skew_SetAngleYAnimation,
++    dcomp_skew_SetAngleY,
++    dcomp_skew_SetCenterXAnimation,
++    dcomp_skew_SetCenterX,
++    dcomp_skew_SetCenterYAnimation,
++    dcomp_skew_SetCenterY,
++};
++
++/* --- rotate ------------------------------------------------------------ */
++
++static HRESULT STDMETHODCALLTYPE dcomp_rotate_SetAngle(IDCompositionRotateTransform *iface, float angle)
++{
++    transform_from_IDCompositionRotateTransform(iface)->angle = angle;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_rotate_SetCenterX(IDCompositionRotateTransform *iface, float center)
++{
++    transform_from_IDCompositionRotateTransform(iface)->center_x = center;
++    return S_OK;
++}
++static HRESULT STDMETHODCALLTYPE dcomp_rotate_SetCenterY(IDCompositionRotateTransform *iface, float center)
++{
++    transform_from_IDCompositionRotateTransform(iface)->center_y = center;
++    return S_OK;
++}
++GEN_TRANSFORM_COMMON(dcomp_rotate, IDCompositionRotateTransform, transform_from_IDCompositionRotateTransform)
++ANIM_SETTER(dcomp_rotate_SetAngleAnimation, IDCompositionRotateTransform)
++ANIM_SETTER(dcomp_rotate_SetCenterXAnimation, IDCompositionRotateTransform)
++ANIM_SETTER(dcomp_rotate_SetCenterYAnimation, IDCompositionRotateTransform)
++
++static const IDCompositionRotateTransformVtbl rotate_vtbl =
++{
++    dcomp_rotate_QueryInterface,
++    dcomp_rotate_AddRef,
++    dcomp_rotate_Release,
++    dcomp_rotate_SetAngleAnimation,
++    dcomp_rotate_SetAngle,
++    dcomp_rotate_SetCenterXAnimation,
++    dcomp_rotate_SetCenterX,
++    dcomp_rotate_SetCenterYAnimation,
++    dcomp_rotate_SetCenterY,
++};
++
++HRESULT dcomp_transform_create(enum dcomp_transform_kind kind, void **out)
++{
++    struct dcomp_transform *transform;
++
++    if (!out) return E_INVALIDARG;
++
++    if (!(transform = calloc(1, sizeof(*transform)))) return E_OUTOFMEMORY;
++
++    transform->ref = 1;
++    transform->kind = kind;
++    transform->matrix.m11 = 1.0f;
++    transform->matrix.m22 = 1.0f;
++    transform->scale_x = 1.0f;
++    transform->scale_y = 1.0f;
++    transform->scale_z = 1.0f;
++
++    switch (kind)
++    {
++    case DCOMP_TRANSFORM_TRANSLATE:
++        transform->IDCompositionTranslateTransform_iface.lpVtbl = &translate_vtbl;
++        *out = &transform->IDCompositionTranslateTransform_iface;
++        break;
++    case DCOMP_TRANSFORM_SCALE:
++        transform->IDCompositionScaleTransform_iface.lpVtbl = &scale_vtbl;
++        *out = &transform->IDCompositionScaleTransform_iface;
++        break;
++    case DCOMP_TRANSFORM_MATRIX:
++        transform->IDCompositionMatrixTransform_iface.lpVtbl = &matrix_vtbl;
++        *out = &transform->IDCompositionMatrixTransform_iface;
++        break;
++    case DCOMP_TRANSFORM_SKEW:
++        transform->IDCompositionSkewTransform_iface.lpVtbl = &skew_vtbl;
++        *out = &transform->IDCompositionSkewTransform_iface;
++        break;
++    case DCOMP_TRANSFORM_ROTATE:
++        transform->IDCompositionRotateTransform_iface.lpVtbl = &rotate_vtbl;
++        *out = &transform->IDCompositionRotateTransform_iface;
++        break;
++    default:
++        free(transform);
++        return E_NOTIMPL;
++    }
++
++    return S_OK;
++}
+-- 
+2.53.0
+

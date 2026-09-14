@@ -1,0 +1,7 @@
+      2 FAIL ret=007c49be rv=00000002 key=L"SOFTWARE\\Microsoft\\SQMClient"
+      2 FAIL ret=007c4950 rv=00000002 key=L"SOFTWARE\\Microsoft\\SQMClient"
+      2 FAIL ret=006c2c89 rv=00000002 key=L"Software\\Adobe\\ALCID"
+      1 FAIL ret=006ae44a rv=00000002 key=L"Software\\Policies\\Microsoft\\Windows\\CurrentVersion\\Internet Settings"
+      1 FAIL ret=006ae44a rv=00000002 key=L"Software\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+      1 FAIL ret=006ae44a rv=00000002 key=L"SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+      1 FAIL ret=006ae44a rv=00000002 key=L"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"

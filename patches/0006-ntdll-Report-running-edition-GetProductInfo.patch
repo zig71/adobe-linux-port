@@ -1,0 +1,139 @@
+diff --git a/dlls/kernel32/tests/version.c b/dlls/kernel32/tests/version.c
+index c0043be933..136c15096b 100644
+--- a/dlls/kernel32/tests/version.c
++++ b/dlls/kernel32/tests/version.c
+@@ -114,6 +114,53 @@ static void test_GetProductInfo(void)
+     res = pGetProductInfo(6, 1, 0, 0, NULL);
+     ok( (!res) && (GetLastError() == 0xdeadbeef),
+         "got %ld with 0x%lx (expected FALSE with LastError untouched\n", res, GetLastError());
++
++    /* Core edition reports Core/HomePremium (verified on Windows 10 Home) */
++    {
++        HKEY hk;
++        char saved[64];
++        DWORD saved_len = sizeof(saved), type;
++        LONG save_res;
++
++        if (RegOpenKeyExA( HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
++                           0, KEY_QUERY_VALUE | KEY_SET_VALUE, &hk ))
++        {
++            win_skip( "cannot open CurrentVersion key\n" );
++            return;
++        }
++        save_res = RegQueryValueExA( hk, "EditionId", NULL, &type, (LPBYTE)saved, &saved_len );
++        if (RegSetValueExA( hk, "EditionId", 0, REG_SZ, (const BYTE *)"Core", 5 ))
++        {
++            win_skip( "cannot stage Core EditionId\n" );
++            RegCloseKey( hk );
++            return;
++        }
++        product = 0;
++        res = pGetProductInfo( 10, 0, 0, 0, &product );
++        ok( res && product == PRODUCT_CORE,
++            "got %ld and %lu (expected TRUE and PRODUCT_CORE)\n", res, product );
++        product = 0;
++        res = pGetProductInfo( 6, 0, 0, 0, &product );
++        ok( res && product == PRODUCT_HOME_PREMIUM,
++            "got %ld and %lu (expected TRUE and PRODUCT_HOME_PREMIUM)\n", res, product );
++        if (pRtlGetVersion)
++        {
++            RTL_OSVERSIONINFOEXW ver;
++            memset( &ver, 0, sizeof(ver) );
++            ver.dwOSVersionInfoSize = sizeof(ver);
++            if (!pRtlGetVersion( &ver ))
++                ok( ver.wSuiteMask == (VER_SUITE_SINGLEUSERTS | VER_SUITE_PERSONAL),
++                    "got suite %#x (expected SINGLEUSERTS|PERSONAL)\n", ver.wSuiteMask );
++            else
++                ok( 0, "RtlGetVersion failed\n" );
++        }
++        else win_skip( "RtlGetVersion not available\n" );
++        if (!save_res && type == REG_SZ)
++            RegSetValueExA( hk, "EditionId", 0, REG_SZ, (const BYTE *)saved, saved_len );
++        else
++            RegDeleteValueA( hk, "EditionId" );
++        RegCloseKey( hk );
++    }
+ }
+ 
+ static void test_GetVersionEx(void)
+diff --git a/dlls/ntdll/version.c b/dlls/ntdll/version.c
+index c58fa2fe51..4d4fe4408b 100644
+--- a/dlls/ntdll/version.c
++++ b/dlls/ntdll/version.c
+@@ -362,7 +362,17 @@ static BOOL get_nt_registry_version( RTL_OSVERSIONINFOEXW *version )
+             NtClose( hkey2 );
+         }
+ 
+-        /* FIXME: get wSuiteMask */
++        /* Derive the suite mask from the edition: Core (Home) systems carry
++         * VER_SUITE_SINGLEUSERTS | VER_SUITE_PERSONAL (Windows 10 Home
++         * reports 768). Other editions keep the previous value. */
++        RtlInitUnicodeString( &valueW, L"EditionId" );
++        if (!NtQueryValueKey( hkey, &valueW, KeyValuePartialInformation, tmp, sizeof(tmp) - sizeof(WCHAR), &count ))
++        {
++            WCHAR *str = (WCHAR *)info->Data;
++            str[info->DataLength / sizeof(WCHAR)] = 0;
++            if (!wcsicmp( str, L"Core" ))
++                version->wSuiteMask = VER_SUITE_SINGLEUSERTS | VER_SUITE_PERSONAL;
++        }
+     }
+ 
+     NtClose( hkey );
+@@ -541,6 +551,37 @@ done:
+            current_version->wProductType );
+ }
+ 
++/**********************************************************************
++ *         is_core_edition
++ *
++ * Whether the running system identifies as the Core edition, consulting
++ * the EditionId value a real machine carries under the CurrentVersion key.
++ */
++static BOOL is_core_edition(void)
++{
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING nameW, valueW;
++    HANDLE hkey;
++    char tmp[128];
++    DWORD count;
++    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)tmp;
++    BOOL ret = FALSE;
++
++    RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion" );
++    InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, 0, NULL );
++    if (NtOpenKey( &hkey, KEY_QUERY_VALUE, &attr )) return FALSE;
++
++    RtlInitUnicodeString( &valueW, L"EditionId" );
++    if (!NtQueryValueKey( hkey, &valueW, KeyValuePartialInformation, tmp, sizeof(tmp) - sizeof(WCHAR), &count ))
++    {
++        WCHAR *str = (WCHAR *)info->Data;
++        str[info->DataLength / sizeof(WCHAR)] = 0;
++        ret = !wcsicmp( str, L"Core" );
++    }
++    NtClose( hkey );
++    return ret;
++}
++
+ /***********************************************************************
+  *           RtlGetProductInfo    (NTDLL.@)
+  *
+@@ -565,7 +606,18 @@ BOOLEAN WINAPI RtlGetProductInfo(DWORD dwOSMajorVersion, DWORD dwOSMinorVersion,
+     }
+ 
+     if (current_version->wProductType == VER_NT_WORKSTATION)
+-        *pdwReturnedProductType = PRODUCT_ULTIMATE_N;
++    {
++        /* Windows reports the running edition mapped into the requested
++         * schema: Core is PRODUCT_CORE on 10+ and PRODUCT_HOME_PREMIUM
++         * where the schema predates it. Verified against Windows 10 Home. */
++        BOOL core = is_core_edition();
++        if (core && dwOSMajorVersion >= 10)
++            *pdwReturnedProductType = PRODUCT_CORE;
++        else if (core && dwOSMajorVersion == 6)
++            *pdwReturnedProductType = PRODUCT_HOME_PREMIUM;
++        else
++            *pdwReturnedProductType = PRODUCT_ULTIMATE_N;
++    }
+     else
+         *pdwReturnedProductType = PRODUCT_STANDARD_SERVER;
+ 

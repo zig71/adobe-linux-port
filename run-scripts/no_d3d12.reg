@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+; No usable D3D12 driver exists here (Dozen is Vulkan 1.2 without what Dawn
+; needs; llvmpipe D3D12 compiles too slowly for client handshakes), so make
+; D3D12 resolve as absent and let clients fall back cleanly. Revisit when a
+; conformant D3D12 driver is available. dxgi/d3d11 stay on DXVK.
+[HKEY_CURRENT_USER\Software\Wine\DllOverrides]
+"d3d12"=""
+"d3d12core"=""

@@ -1,0 +1,8 @@
+Windows Registry Editor Version 5.00
+
+; Workaround (documented): Chromium GPU takes a Win10+-only path that dies
+; under Wine (WebView2 int3 loop; CEF shared-image failure loop). win8 keeps
+; the GPU on the OS-version-gated stable path. Same shape as the existing
+; msedgewebview2.exe entry. Revisit with the x11drv/GPU-path fix.
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\Creative Cloud UI Helper.exe]
+"Version"="win8"

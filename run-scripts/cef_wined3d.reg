@@ -1,0 +1,8 @@
+Windows Registry Editor Version 5.00
+
+; Experiment: route the CEF children through wined3d (GL/llvmpipe) instead of
+; DXVK, keeping the D3D11 API. Tests whether ANGLE shared images work on a
+; different D3D11 driver. Reversible: delete DllOverrides value.
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\Creative Cloud UI Helper.exe\DllOverrides]
+"d3d11"="builtin"
+"dxgi"="builtin"

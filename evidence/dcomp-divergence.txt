@@ -1,0 +1,37 @@
+DirectComposition: Windows vs Wine
+===================================
+Probe: tests/probes/probe_dcomp.c (same PE, both platforms)
+Run:   runs/20260912-030245-diff/
+
+WINDOWS ORACLE
+--------------
+dcomp_dll_load=1
+has_DCompositionCreateDevice=1
+has_DCompositionCreateDevice2=1
+has_DCompositionCreateDevice3=1
+has_DCompositionCreateSurfaceHandle=1
+DCompositionCreateDevice=0x80004002        <- E_NOINTERFACE (real impl, rejects IID_IUnknown)
+DCompositionCreateDevice2=0x80004002
+DCompositionCreateDevice3=0x80004002
+DCompositionCreateSurfaceHandle=0x00000000 <- S_OK
+surface_handle_nonnull=1                   <- real handle returned
+
+WINE 11.17 (build-arch)
+-----------------------
+dcomp_dll_load=1
+DCompositionCreateDevice=0x80004001        <- E_NOTIMPL (FIXME stub)
+DCompositionCreateDevice2=0x80004001
+DCompositionCreateDevice3=0x80004001
+DCompositionCreateSurfaceHandle            <- faults in __wine_spec_unimplemented_stub
+   1 0x006ffffbad1cc5 __wine_spec_unimplemented_stub+0x35
+       [/home/kubuntu/adobe-wine-lab/src/wine/libs/winecrt0/stub.c:40] in dcomp
+
+SOURCE CONFIRMATION
+-------------------
+dlls/dcomp/device.c   47 lines; every function is a FIXME returning E_NOTIMPL
+dlls/dcomp/dcomp.spec @ stub for DCompositionCreateSurfaceHandle and ~15 others
+
+UPSTREAM
+--------
+Wine bug 58921  WebView2 fails: "DCompositionCreateDevice failed: Not implemented (0x80004001)"
+Wine bug 59370  blank WebView2 windows (Chromium D3D11 shared-texture path), dup of 58921

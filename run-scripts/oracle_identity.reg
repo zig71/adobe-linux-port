@@ -1,0 +1,61 @@
+Windows Registry Editor Version 5.00
+
+; Full oracle-parity CurrentVersion for BOTH views (oracle 32-bit dump).
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion]
+"CurrentVersion"="6.3"
+"CurrentMajorVersionNumber"=dword:0000000a
+"CurrentMinorVersionNumber"=dword:00000000
+"CurrentBuild"="26200"
+"CurrentBuildNumber"="26200"
+"UBR"=dword:000024e5
+"ProductName"="Windows 10 Home"
+"EditionId"="Core"
+"CompositionEditionID"="Core"
+"DisplayVersion"="25H2"
+"ReleaseId"="2009"
+"BuildLab"="26100.ge_release.240331-1435"
+"BuildLabEx"="26100.1.amd64fre.ge_release.240331-1435"
+"BuildBranch"="ge_release"
+"BuildGUID"="ffffffff-ffff-ffff-ffff-ffffffffffff"
+"BaseBuildRevisionNumber"="1"
+"CurrentType"="Multiprocessor Free"
+"InstallationType"="Client"
+"SoftwareType"="System"
+"SystemRoot"="C:\\windows"
+"PathName"="C:\\WINDOWS"
+"RegisteredOwner"="winnie"
+"EditionSubManufacturer"=""
+"EditionSubstring"=""
+"EditionSubVersion"=""
+"InstallDate"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion]
+"CurrentVersion"="6.3"
+"CurrentMajorVersionNumber"=dword:0000000a
+"CurrentMinorVersionNumber"=dword:00000000
+"CurrentBuild"="26200"
+"CurrentBuildNumber"="26200"
+"UBR"=dword:000024e5
+"ProductName"="Windows 10 Home"
+"EditionId"="Core"
+"CompositionEditionID"="Core"
+"DisplayVersion"="25H2"
+"ReleaseId"="2009"
+"BuildLab"="26100.ge_release.240331-1435"
+"BuildLabEx"="26100.1.amd64fre.ge_release.240331-1435"
+"BuildBranch"="ge_release"
+"BuildGUID"="ffffffff-ffff-ffff-ffff-ffffffffffff"
+"BaseBuildRevisionNumber"="1"
+"CurrentType"="Multiprocessor Free"
+"InstallationType"="Client"
+"SoftwareType"="System"
+"SystemRoot"="C:\\windows"
+"PathName"="C:\\WINDOWS"
+"RegisteredOwner"="winnie"
+"EditionSubManufacturer"=""
+"EditionSubstring"=""
+"EditionSubVersion"=""
+"InstallDate"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\ProductOptions]
+"ProductType"="WinNT"

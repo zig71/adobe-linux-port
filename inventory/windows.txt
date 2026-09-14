@@ -1,0 +1,94 @@
+# Adobe Wine Lab — Windows oracle (Win11-25H2)
+
+Raw read-only inventory, captured 2026-09-11 via `plink` + PowerShell.
+Host: `winnie@192.168.164.18` (DESKTOP-PS6FB2N).
+
+    SECTION:OS
+    Caption                        Microsoft Windows 11 Home
+    Version                        10.0.26200
+    Build                          26200.9445
+    DisplayVersion                 25H2
+    EditionID                      Core
+    InstallDate                    11/09/2026 19:32:48
+    Computer                       DESKTOP-PS6FB2N
+    Manufacturer                   Microsoft Corporation
+    Model                          Virtual Machine
+    RAM_GB                         5.7
+    HypervisorPresent              True
+    CPU                            AMD Ryzen 9 3900XT 12-Core Processor
+    Cores                          2
+    Logical                        4
+    SECTION:GPU_WMI
+    VideoController                Microsoft Hyper-V Video | drv=10.0.26100.1150 | vram_mb=0 | status=OK |
+    VideoController                NVIDIA GeForce RTX 3080 | drv=10.0.26100.1150 | vram_mb=0 | status=OK |
+    SECTION:GPU_PNP
+    PnP                            Microsoft Basic Display Driver | OK
+    PnP                            Microsoft Hyper-V Video | OK
+    PnP                            NVIDIA GeForce RTX 3080 | OK
+    SECTION:NVSMI
+    path                           C:\Windows\System32\nvidia-smi.exe
+    NVIDIA GeForce RTX 3080, 595.95, 10240 MiB, 8.6, 94.02.26.40.fc
+    GPU 0: NVIDIA GeForce RTX 3080 (UUID: GPU-c125cbbd-f0a0-94ee-ef29-33f439bbc51b)
+    SECTION:GPU_CONFIG_HKLM
+    Adapter                        Microsoft Hyper-V Video | drv=10.0.26100.1150 | {D805B9AC-AE51-11F1-A91D-806E6F6E6963}
+    SECTION:TOOLS
+    windbgx                        C:\Users\winnie\AppData\Local\Microsoft\WindowsApps\WinDbgX.exe
+    wpr                            C:\WINDOWS\system32\wpr.exe
+    wpa                            C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\wpa.exe
+    xperf                          C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\xperf.exe
+    git                            C:\Program Files\Git\cmd\git.exe
+    python                         C:\Users\winnie\AppData\Local\Programs\Python\Python314\python.exe
+    python3                        C:\Users\winnie\AppData\Local\Microsoft\WindowsApps\python3.exe
+    ssh                            C:\WINDOWS\System32\OpenSSH\ssh.exe
+    scp                            C:\WINDOWS\System32\OpenSSH\scp.exe
+    vsjitdebugger                  C:\WINDOWS\system32\vsjitdebugger.exe
+    SECTION:TOOL_DIRS
+    DIR                            C:\Program Files (x86)\Windows Kits\10\Debuggers\x64
+    DIR                            C:\Program Files\Git\cmd
+    SECTION:MSVC
+    vswhere                        C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe
+    installPath                    C:\Program Files\Microsoft Visual Studio\18\Community
+    displayName                    Visual Studio Community 2026
+    catalog_productDisplayVersion  18.10.0
+    C:\Program Files\Microsoft Visual Studio\18\Community
+    VS                             18
+    VSx86                          Installer
+    VSx86                          Shared
+    SECTION:WINSDK
+    SDK_Include                    10.0.28000.0
+    SDK_bin                        10.0.14393.0
+    SDK_bin                        10.0.15063.0
+    SDK_bin                        10.0.16299.0
+    SDK_bin                        10.0.17134.0
+    SDK_bin                        10.0.28000.0
+    SDK_bin                        arm64
+    SDK_bin                        x64
+    SDK_bin                        x86
+    Dbg_x64                        dbgcore.dll
+    Dbg_x64                        dbghelp.dll
+    Dbg_x64                        srcsrv.dll
+    Dbg_x64                        symsrv.dll
+    SECTION:ADOBE
+    (nothing — no Adobe software installed)
+    SECTION:SERVICES
+    sshd                           Running
+    LastBoot                       11/09/2026 20:28:15
+    Uptime                         02:38:38.1941342
+    SECTION:NET
+    IP                             Ethernet 192.168.164.18
+    IP                             Loopback Pseudo-Interface 1 127.0.0.1
+    SECTION:DISK
+    Drive                          C: used=68.3GB free=30.6GB
+
+Toolchain detail (from the same session):
+
+    VSINSTALL=C:\Program Files\Microsoft Visual Studio\18\Community
+    C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe
+    hello_win32.c
+    probe_gpu.c
+    BUILD_DONE
+
+Missing on the oracle (worth installing for observability Tier 2/3):
+Sysinternals (ProcMon, ProcDump, Process Explorer, sigcheck), standalone
+`cdb`/`kd` (the Windows SDK Debugging Tools for Windows "Debuggers" feature —
+only redistributable DLLs are present today).

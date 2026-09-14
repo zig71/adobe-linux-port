@@ -1,0 +1,6 @@
+Windows Registry Editor Version 5.00
+
+; WebView2 browser logging via Group Policy (no env-var side effects on the
+; installer itself). Chromium writes chrome_debug.log into the EBWebView dir.
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\WebView2]
+"AdditionalBrowserArguments"="--enable-logging=stderr --v=1"

@@ -1,0 +1,10 @@
+Windows Registry Editor Version 5.00
+
+; EdgeUpdate ClientState for the staged WebView2 runtime.
+; Mirrors what the runtime's own installer writes on a normal Windows
+; machine (oracle reference); functional values only.
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\ClientState\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}]
+"EBWebView"="C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\153.0.4234.32"
+"pv"="153.0.4234.32"
+"brand"="INBX"
+"InstallSource"="windows"

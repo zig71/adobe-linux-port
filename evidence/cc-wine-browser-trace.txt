@@ -1,0 +1,60 @@
+02ec:trace:urlmon:DllMain 77280000 0x1 00000000
+02ec:trace:ieframe:DllMain (74CB0000 1 00000000)
+02ec:trace:ieframe:DllGetClassObject (CLSID_WebBrowser {00000001-0000-0000-c000-000000000046} 0022E4AC)
+02ec:trace:ieframe:ClassFactory_QueryInterface (74CDE104)->(IID_IClassFactory 0022E4AC)
+02ec:trace:ieframe:create_webbrowser (00000000 {00000000-0000-0000-c000-000000000046} 0022E4B0) version=2
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IUnknown 0022E4B0)
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IOleObject 012FCEDC)
+02ec:trace:ieframe:OleObject_GetMiscStatus (01314410)->(1, 012FCF18)
+02ec:trace:ieframe:OleObject_SetClientSite (01314410)->(012FCEA0)
+02ec:trace:ieframe:create_shell_embedding_hwnd parent=00040084 hwnd=0003007C
+02ec:trace:ieframe:SetQueryNetSessionCount (1)
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IPersistStreamInit 0022E568)
+02ec:fixme:ieframe:PersistStreamInit_InitNew (01314410)
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IViewObjectEx 012FCEE8) returning NULL
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IViewObject2 012FCEE8)
+02ec:trace:ieframe:OleObject_Advise (01314410)->(012FCEBC, 012FCF14)
+02ec:trace:ieframe:ViewObject_SetAdvise (01314410)->(1 00000000 012FCEBC)
+02ec:fixme:ieframe:ViewObject_SetAdvise aspects and/or flags not supported yet
+02ec:trace:ieframe:OleObject_SetHostNames (01314410)->(L"AXWIN", (null))
+02ec:trace:ieframe:OleObject_SetExtent (01314410)->(1 012FCF1C)
+02ec:trace:ieframe:OleObject_GetExtent (01314410)->(1, 012FCF1C)
+02ec:trace:ieframe:OleObject_DoVerb (01314410)->(-5 00000000 012FCEA0 0 00040084 (0,0)-(1104,720))
+02ec:trace:ieframe:OleObject_DoVerb OLEIVERB_INPLACEACTIVATE
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IRunnableObject 0022E46C) returning NULL
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IOleInPlaceObject 012FCEEC)
+02ec:fixme:ieframe:ViewObject_Draw (01314410)->(1 -1 00000000 00000000 00000000 08010057 012FCF2C 012FCF2C 00000000 00000000)
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IObjectWithSite 0022E55C) returning NULL
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IWebBrowser2 0022E634)
+02ec:fixme:ieframe:WebBrowser_put_RegisterAsDropTarget (01314410)->(0)
+02ec:fixme:ieframe:WebBrowser_put_RegisterAsBrowser (01314410)->(0)
+02ec:trace:ieframe:WebBrowser_put_Silent (01314410)->(ffffffff)
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IServiceProvider 0022E624)
+02ec:fixme:ieframe:WBServiceProvider_QueryService (01314410)->({cb728b20-f786-11ce-92ad-00aa00a74cd0}, {cb728b20-f786-11ce-92ad-00aa00a74cd0} 0022E620)
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IConnectionPointContainer 0022E5F4)
+02ec:trace:ieframe:ConnectionPointContainer_FindConnectionPoint (0131457C)->(DIID_DWebBrowserEvents2 0022E5F8)
+02ec:trace:ieframe:ConnectionPoint_Advise (01335010)->(0133AA5C 0133AA84)
+02ec:trace:ieframe:WebBrowser_QueryInterface (01314410)->(IID_IWebBrowser2 0022E7BC)
+02ec:trace:ieframe:WebBrowser_Navigate (01314410)->(L"C:\\users\\kubuntu\\AppData\\Local\\Temp\\{8D87B4E8-AEEC-4146-9C81-851D259B8F9B}\\index.html" 00A07488 {VT_ERROR: 80020004} 00A07488 {VT_ERROR: 80020004} 00A07488 {VT_ERROR: 80020004} 00A07488 {VT_ERROR: 80020004})
+02ec:trace:ieframe:navigate_url navigating to L"C:\\users\\kubuntu\\AppData\\Local\\Temp\\{8D87B4E8-AEEC-4146-9C81-851D259B8F9B}\\index.html"
+02ec:warn:ieframe:navigate_url Invalid post data 00A07488 {VT_ERROR: 80020004}
+02ec:trace:ieframe:resize_document (013144E8)->(1104 720)
+02ec:trace:ieframe:notify_download_state (1)
+02ec:trace:ieframe:on_commandstate_change command=2 enable=0
+02ec:trace:ieframe:on_commandstate_change command=1 enable=0
+02ec:trace:urlmon:CreateAsyncBindCtx (00000000 013350D0 00000000 0022D500)
+02ec:trace:urlmon:RegisterBindStatusCallback (01358348 013350D0 00000000 0)
+02ec:warn:ieframe:BindStatusCallback_QueryInterface (013350D0)->({6d5140c1-7436-11ce-8034-00aa006009fa} 0022D3DC)
+02ec:trace:ieframe:create_moniker was L"C:\\users\\kubuntu\\AppData\\Local\\Temp\\{8D87B4E8-AEEC-4146-9C81-851D259B8F9B}\\index.html" got L"file:///C:/users/kubuntu/AppData/Local/Temp/%7B8D87B4E8-AEEC-4146-9C81-851D259B8F9B%7D/index.html"
+02ec:trace:urlmon:CreateURLMonikerEx (00000000, L"file:///C:/users/kubuntu/AppData/Local/Temp/%7B8D87B4E8-AEEC-4146-9C81-851D259B8F9B%7D/index.html", 0022D390, 00000000)
+02ec:trace:urlmon:URLMoniker_GetDisplayName (02502AA0,00000000,00000000,0022D398)
+02ec:trace:urlmon:URLMoniker_BindToObject (02502AA0)->(01358348,00000000,{00000000-0000-0000-c000-000000000046},0022D394)
+02ec:trace:urlmon:URLMoniker_Reduce (02502AA0,013583C8,0,00000000,0022D31C)
+02ec:warn:urlmon:URLMoniker_QueryInterface (02502AA0)->({f29f6bc0-5021-11ce-aa15-00006901293f},0022D2AC)
+02ec:trace:urlmon:URLMoniker_GetDisplayName (02502AA0,013583C8,00000000,0022D2B4)
+02ec:trace:urlmon:URLMoniker_GetClassID (02502AA0,0022D2B8)
+02ec:trace:urlmon:get_notif_hwnd hwnd = 000200AC
+02ec:trace:urlmon:BindStatusCallback_QueryInterface (013588C0)->(IID_IBindStatusCallback, 01358CC8)
+02ec:trace:urlmon:BindStatusCallback_QueryInterface (013588C0)->(IID_IServiceProvider, 01358CCC)
+02ec:trace:urlmon:BindStatusCallback_GetBindInfo (013588C0)->(01358D30 01358CDC)
+02ec:warn:ieframe:BindStatusCallback_QueryInterface (013350D0)->({aaa74ef9-8ee7-4659-88d9-f8c504da73cc} 0022D1C8)

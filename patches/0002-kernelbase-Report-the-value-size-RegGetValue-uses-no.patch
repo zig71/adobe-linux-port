@@ -1,0 +1,365 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Adobe Wine Lab <lab@adobe-wine.invalid>
+Date: Fri, 11 Sep 2026 23:54:03 +0100
+Subject: [PATCH] kernelbase: Report the value size RegGetValue uses, not the
+ size it returns.
+
+---
+ dlls/advapi32/tests/registry.c | 145 +++++++++++++++++++++++++++++++--
+ dlls/kernelbase/registry.c     |  85 +++++++++++++++++--
+ 2 files changed, 216 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/advapi32/tests/registry.c b/dlls/advapi32/tests/registry.c
+index 8717e5f204..8d20997318 100644
+--- a/dlls/advapi32/tests/registry.c
++++ b/dlls/advapi32/tests/registry.c
+@@ -903,8 +903,8 @@ static void test_get_value(void)
+     type = 0xdeadbeef; size = 0;
+     ret = pRegGetValueA(hkey_main, NULL, "TP1_SZ", RRF_RT_REG_SZ, &type, NULL, &size);
+     ok(ret == ERROR_SUCCESS, "ret=%ld\n", ret);
+-    /* v5.2.3790.1830 (2003 SP1) returns sTestpath1 length + 2 here. */
+-    ok(size == strlen(sTestpath1)+1 || broken(size == strlen(sTestpath1)+2),
++    /* one more character than the value itself occupies */
++    ok(size == strlen(sTestpath1)+2,
+        "strlen(sTestpath1)=%d size=%ld\n", lstrlenA(sTestpath1), size);
+     ok(type == REG_SZ, "type=%ld\n", type);
+ 
+@@ -941,7 +941,7 @@ static void test_get_value(void)
+     buf[0] = 0; type = 0xdeadbeef; size = sizeof(buf);
+     ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_REG_SZ, &type, buf, &size);
+     ok(ret == ERROR_SUCCESS, "ret=%ld\n", ret);
+-    todo_wine ok(size == strlen(sTestpath1)+1,
++    ok(size == strlen(sTestpath1)+1,
+        "strlen(expanded)=%d, strlen(sTestpath1)=%d, size=%ld\n", lstrlenA(expanded), lstrlenA(sTestpath1), size);
+     ok(type == REG_SZ, "type=%ld\n", type);
+     ok(!strcmp(expanded, buf), "expanded=\"%s\" buf=\"%s\"\n", expanded, buf);
+@@ -967,7 +967,7 @@ static void test_get_value(void)
+     size = 0xbadbeef;
+     ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_REG_EXPAND_SZ|RRF_NOEXPAND, NULL, NULL, &size);
+     ok(ret == ERROR_SUCCESS, "ret=%ld\n", ret);
+-    todo_wine ok(size == strlen(sTestpath1)+2, "strlen(sTestpath1)=%d size=%ld\n", lstrlenA(sTestpath1), size);
++    ok(size == strlen(sTestpath1)+2, "strlen(sTestpath1)=%d size=%ld\n", lstrlenA(sTestpath1), size);
+ 
+     /* Query REG_EXPAND_SZ using RRF_RT_REG_SZ|RRF_NOEXPAND (type mismatch) */
+     ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_REG_SZ|RRF_NOEXPAND, NULL, NULL, NULL);
+@@ -982,7 +982,7 @@ static void test_get_value(void)
+     buf[0] = 0; type = 0xdeadbeef; size = sizeof(buf);
+     ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_ANY, &type, buf, &size);
+     ok(ret == ERROR_SUCCESS, "ret=%ld\n", ret);
+-    todo_wine ok(size == strlen(sTestpath1)+1,
++    ok(size == strlen(sTestpath1)+1,
+         "strlen(expanded)=%d, strlen(sTestpath1)=%d, size=%ld\n", lstrlenA(expanded), lstrlenA(sTestpath1), size);
+     ok(type == REG_SZ, "type=%ld\n", type);
+     ok(!strcmp(expanded, buf), "expanded=\"%s\" buf=\"%s\"\n", expanded, buf);
+@@ -1011,7 +1011,135 @@ static void test_get_value(void)
+     ok(ret == ERROR_UNSUPPORTED_TYPE || broken(ret == ERROR_INVALID_PARAMETER) /* before win8 */, "ret=%ld\n", ret);
+     ok(type == REG_DWORD, "type=%ld\n", type);
+     ok(size == 4, "size=%ld\n", size);
+-} 
++}
++
++/* The size RegGetValue reports is the size of the buffer it worked from, not
++ * the size of the data it returns. For a string value Windows reports one
++ * character more than the stored size, so that the terminator it may have to
++ * append fits; a REG_MULTI_SZ value gets two. An expanded REG_EXPAND_SZ value
++ * keeps the raw size unless the expansion grew it, in which case the expanded
++ * size is reported one character short of what a second read would need. */
++static void test_get_value_size(void)
++{
++    static const char *expanded = "0123456789";      /* 10 chars, 11 bytes */
++    static const char *raw = "%WINE_TESTSIZE%";      /* 15 chars, 16 bytes */
++
++    char buf[64];
++    WCHAR bufW[64];
++    DWORD ret, type, size;
++
++    if (!pRegGetValueA)
++    {
++        win_skip("RegGetValue not available on this platform\n");
++        return;
++    }
++
++    SetEnvironmentVariableA("WINE_TESTSIZE", expanded);
++    RegSetValueExA(hkey_main, "SIZE_SZ", 0, REG_SZ, (const BYTE *)"abcdefghij", 11);
++    RegSetValueExA(hkey_main, "SIZE_MS", 0, REG_MULTI_SZ, (const BYTE *)"a\0b\0\0", 6);
++    RegSetValueExA(hkey_main, "SIZE_EXPSHORT", 0, REG_EXPAND_SZ, (const BYTE *)raw, 16);
++    RegSetValueExA(hkey_main, "SIZE_EXPLONG", 0, REG_EXPAND_SZ,
++                   (const BYTE *)"%WINE_TESTSIZE%aaaaaa", 22);
++
++    /* A plain string: one character beyond the stored size. */
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_SZ", RRF_RT_REG_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 12, "size=%ld\n", size);
++    ok(type == REG_SZ, "type=%ld\n", type);
++
++    /* ... also when the caller's buffer is too small. */
++    size = 8;
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_SZ", RRF_RT_REG_SZ, &type, buf, &size);
++    ok(ret == ERROR_MORE_DATA, "ret=%ld\n", ret);
++    ok(size == 12, "size=%ld\n", size);
++
++    /* ... and the size is exact once the value fits. */
++    size = sizeof(buf);
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_SZ", RRF_RT_REG_SZ, &type, buf, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 11, "size=%ld\n", size);
++
++    /* A value with no data has no terminator to make room for. */
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueA(hkey_main, NULL, "TP1_ZB_SZ", RRF_RT_REG_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 1, "size=%ld\n", size);
++    ok(type == REG_SZ, "type=%ld\n", type);
++
++    /* A multi-string needs room for the extra terminating empty string. */
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_MS", RRF_RT_REG_MULTI_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 8, "size=%ld\n", size);
++    ok(type == REG_MULTI_SZ, "type=%ld\n", type);
++
++    /* An expansion that shortens the value keeps the raw size (16 bytes). */
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_EXPSHORT", RRF_RT_REG_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 16, "size=%ld\n", size);
++    ok(type == REG_SZ, "type=%ld\n", type);
++
++    size = sizeof(buf);
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_EXPSHORT", RRF_RT_REG_SZ, &type, buf, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 16, "size=%ld\n", size);
++    ok(!strcmp(expanded, buf), "expanded=\"%s\" buf=\"%s\"\n", expanded, buf);
++
++    /* An expansion that lengthens the value reports the expanded size, one
++     * character beyond what the value itself needs. The value is 21 characters
++     * stored as 22 bytes, and expands to 16 characters, so the raw size
++     * dominates. */
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_EXPLONG", RRF_RT_REG_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 22, "size=%ld\n", size);
++
++    /* A buffer that cannot take the expansion reports the same size. */
++    size = 8;
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_EXPLONG", RRF_RT_REG_SZ, &type, buf, &size);
++    ok(ret == ERROR_MORE_DATA, "ret=%ld\n", ret);
++    ok(size == 22, "size=%ld\n", size);
++
++    /* Once the buffer fits, the reported size is the size it was read into. */
++    size = sizeof(buf);
++    ret = pRegGetValueA(hkey_main, NULL, "SIZE_EXPLONG", RRF_RT_REG_SZ, &type, buf, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 22, "size=%ld\n", size);
++    ok(!strcmp(buf, "0123456789aaaaaa"), "buf=\"%s\"\n", buf);
++
++    /* The wide entry point reports the same character counts. */
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueW(hkey_main, NULL, L"SIZE_SZ", RRF_RT_REG_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 24, "size=%ld\n", size);
++
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueW(hkey_main, NULL, L"TP1_ZB_SZ", RRF_RT_REG_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 2, "size=%ld\n", size);
++
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueW(hkey_main, NULL, L"SIZE_EXPSHORT", RRF_RT_REG_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 32, "size=%ld\n", size);
++
++    size = 0; type = 0xdeadbeef;
++    ret = pRegGetValueW(hkey_main, NULL, L"SIZE_EXPLONG", RRF_RT_REG_SZ, &type, NULL, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 44, "size=%ld\n", size);
++
++    size = sizeof(bufW);
++    ret = pRegGetValueW(hkey_main, NULL, L"SIZE_EXPLONG", RRF_RT_REG_SZ, &type, bufW, &size);
++    ok(!ret, "ret=%ld\n", ret);
++    ok(size == 44, "size=%ld\n", size);
++
++    RegDeleteValueA(hkey_main, "SIZE_SZ");
++    RegDeleteValueA(hkey_main, "SIZE_MS");
++    RegDeleteValueA(hkey_main, "SIZE_EXPSHORT");
++    RegDeleteValueA(hkey_main, "SIZE_EXPLONG");
++}
+ 
+ static void test_reg_open_key(void)
+ {
+@@ -2248,7 +2376,7 @@ static void test_string_termination(void)
+         outsize = insize;
+         ret = pRegGetValueA(subkey, NULL, "stringtest", RRF_RT_REG_SZ, NULL, buffer, &outsize);
+         ok(ret == ERROR_MORE_DATA, "RegGetValueA returned: %ld\n", ret);
+-        ok(outsize == insize + 1, "wrong size: %lu != %lu\n", outsize, insize + 1);
++        ok(outsize == insize + 2, "wrong size: %lu != %lu\n", outsize, insize + 2);
+         memset(buffer, 0xbd, sizeof(buffer));
+         ret = pRegGetValueA(subkey, NULL, "stringtest", RRF_RT_REG_SZ, NULL, buffer, &outsize);
+         ok(ret == ERROR_SUCCESS, "RegGetValueA returned: %ld\n", ret);
+@@ -2361,7 +2489,7 @@ static void test_multistring_termination(void)
+         outsize = insize;
+         ret = pRegGetValueA(subkey, NULL, "multistringtest", RRF_RT_REG_SZ, NULL, buffer, &outsize);
+         ok(ret == ERROR_MORE_DATA, "RegGetValueA returned: %ld\n", ret);
+-        ok(outsize == insize + 1, "wrong size: %lu != %lu\n", outsize, insize + 1);
++        ok(outsize == insize + 2, "wrong size: %lu != %lu\n", outsize, insize + 2);
+         outsize = insize + 2;
+         memset(buffer, 0xbd, sizeof(buffer));
+         ret = pRegGetValueA(subkey, NULL, "multistringtest", RRF_RT_REG_SZ, NULL, buffer, &outsize);
+@@ -5192,6 +5320,7 @@ START_TEST(registry)
+     test_enum_value();
+     test_query_value_ex();
+     test_get_value();
++    test_get_value_size();
+     test_reg_open_key();
+     test_reg_create_key();
+     test_reg_close_key();
+diff --git a/dlls/kernelbase/registry.c b/dlls/kernelbase/registry.c
+index aebe4306c7..b20a22cff9 100644
+--- a/dlls/kernelbase/registry.c
++++ b/dlls/kernelbase/registry.c
+@@ -1902,7 +1902,9 @@ LSTATUS WINAPI RegGetValueW( HKEY hKey, LPCWSTR pszSubKey, LPCWSTR pszValue,
+                           LPDWORD pcbData )
+ {
+     DWORD dwType, cbData = (pvData && pcbData) ? *pcbData : 0;
++    DWORD cbRaw = 0;
+     PVOID pvBuf = NULL;
++    BOOL did_expand = FALSE, grew = FALSE;
+     LONG ret;
+ 
+     TRACE("(%p,%s,%s,%ld,%p,%p,%p=%ld)\n",
+@@ -1928,6 +1930,11 @@ LSTATUS WINAPI RegGetValueW( HKEY hKey, LPCWSTR pszSubKey, LPCWSTR pszValue,
+ 
+     ret = RegQueryValueExW(hKey, pszValue, NULL, &dwType, pvData, &cbData);
+ 
++    /* Size of the value as stored, before any terminator is appended or any
++     * expansion is applied. Windows reports the size it worked from rather
++     * than the size it returns, so this is the basis for what it reports. */
++    cbRaw = cbData;
++
+     /* If the value is a string, we need to read in the whole value to be able
+      * to know exactly how many bytes are needed after expanding the string and
+      * ensuring that it is null-terminated. */
+@@ -1970,10 +1977,23 @@ LSTATUS WINAPI RegGetValueW( HKEY hKey, LPCWSTR pszSubKey, LPCWSTR pszValue,
+             /* Recheck dwType in case it changed since the first call */
+             if (dwType == REG_EXPAND_SZ && !(dwFlags & RRF_NOEXPAND))
+             {
+-                cbData = ExpandEnvironmentStringsW(pvBuf, pvData,
+-                                                   pcbData ? *pcbData : 0) * sizeof(WCHAR);
++                /* The W variant always returns the required size, including
++                 * the terminating null, whether or not the destination could
++                 * take the result. */
++                DWORD cbExpanded = ExpandEnvironmentStringsW(pvBuf, pvData,
++                                                             pcbData ? *pcbData : 0) * sizeof(WCHAR);
++
++                /* Windows reports the size of the buffer it worked from, which
++                 * is sized from the raw value. The expanded size is only
++                 * reported once the expansion has grown past it. */
++                if (cbExpanded > cbData)
++                {
++                    cbData = cbExpanded;
++                    grew = TRUE;
++                }
++                did_expand = TRUE;
+                 dwType = REG_SZ;
+-                if (pvData && cbData > *pcbData)
++                if (pvData && cbExpanded > *pcbData)
+                     ret = ERROR_MORE_DATA;
+             }
+             else if (pvData)
+@@ -1988,6 +2008,22 @@ LSTATUS WINAPI RegGetValueW( HKEY hKey, LPCWSTR pszSubKey, LPCWSTR pszValue,
+         HeapFree(GetProcessHeap(), 0, pvBuf);
+     }
+ 
++    /* When the value could not be returned in the caller's buffer, Windows
++     * reports the size that would be required rather than the size it has:
++     * a string that was not expanded needs room for the terminator it has to
++     * append, while an expanded value keeps the size it was read into unless
++     * the expansion grew it. A value with no data at all gets no extra room. */
++    if (is_string(dwType) && (!pvData || ret != ERROR_SUCCESS))
++    {
++        if (!did_expand)
++        {
++            if (cbRaw)
++                cbData += (dwType == REG_MULTI_SZ) ? 2 * sizeof(WCHAR) : sizeof(WCHAR);
++        }
++        else if (grew)
++            cbData += sizeof(WCHAR);
++    }
++
+     if (pszSubKey && pszSubKey[0])
+         RegCloseKey(hKey);
+ 
+@@ -2013,7 +2049,9 @@ LSTATUS WINAPI RegGetValueA( HKEY hKey, LPCSTR pszSubKey, LPCSTR pszValue,
+                              LPDWORD pcbData )
+ {
+     DWORD dwType, cbData = (pvData && pcbData) ? *pcbData : 0;
++    DWORD cbRaw = 0;
+     PVOID pvBuf = NULL;
++    BOOL did_expand = FALSE, grew = FALSE;
+     LONG ret;
+ 
+     TRACE("(%p,%s,%s,%ld,%p,%p,%p=%ld)\n",
+@@ -2039,6 +2077,11 @@ LSTATUS WINAPI RegGetValueA( HKEY hKey, LPCSTR pszSubKey, LPCSTR pszValue,
+ 
+     ret = RegQueryValueExA(hKey, pszValue, NULL, &dwType, pvData, &cbData);
+ 
++    /* Size of the value as stored, before any terminator is appended or any
++     * expansion is applied. Windows reports the size it worked from rather
++     * than the size it returns, so this is the basis for what it reports. */
++    cbRaw = cbData;
++
+     /* If the value is a string, we need to read in the whole value to be able
+      * to know exactly how many bytes are needed after expanding the string and
+      * ensuring that it is null-terminated. */
+@@ -2081,10 +2124,24 @@ LSTATUS WINAPI RegGetValueA( HKEY hKey, LPCSTR pszSubKey, LPCSTR pszValue,
+             /* Recheck dwType in case it changed since the first call */
+             if (dwType == REG_EXPAND_SZ && !(dwFlags & RRF_NOEXPAND))
+             {
+-                cbData = ExpandEnvironmentStringsA(pvBuf, pvData,
+-                                                   pcbData ? *pcbData : 0);
++                DWORD n = ExpandEnvironmentStringsA(pvBuf, pvData, pcbData ? *pcbData : 0);
++
++                /* The A variant returns the required size plus one extra
++                 * character whenever the destination cannot take the result,
++                 * so only a result that fits gives the size directly. */
++                if (!pvData || n > *pcbData) n = n ? n - 1 : 0;
++
++                /* Windows reports the size of the buffer it worked from, which
++                 * is sized from the raw value. The expanded size is only
++                 * reported once the expansion has grown past it. */
++                if (n > cbData)
++                {
++                    cbData = n;
++                    grew = TRUE;
++                }
++                did_expand = TRUE;
+                 dwType = REG_SZ;
+-                if (pvData && cbData > *pcbData)
++                if (pvData && n > *pcbData)
+                     ret = ERROR_MORE_DATA;
+             }
+             else if (pvData)
+@@ -2099,6 +2156,22 @@ LSTATUS WINAPI RegGetValueA( HKEY hKey, LPCSTR pszSubKey, LPCSTR pszValue,
+         HeapFree(GetProcessHeap(), 0, pvBuf);
+     }
+ 
++    /* When the value could not be returned in the caller's buffer, Windows
++     * reports the size that would be required rather than the size it has:
++     * a string that was not expanded needs room for the terminator it has to
++     * append, while an expanded value keeps the size it was read into unless
++     * the expansion grew it. A value with no data at all gets no extra room. */
++    if (is_string(dwType) && (!pvData || ret != ERROR_SUCCESS))
++    {
++        if (!did_expand)
++        {
++            if (cbRaw)
++                cbData += (dwType == REG_MULTI_SZ) ? 2 : 1;
++        }
++        else if (grew)
++            cbData += 1;
++    }
++
+     if (pszSubKey && pszSubKey[0])
+         RegCloseKey(hKey);
+ 

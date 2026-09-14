@@ -1,0 +1,32 @@
+# never commit secrets or machine state
+lab.env
+*credentials*.txt
+*.key
+.ssh/
+keypairs/
+
+# lab outputs, not sources
+artifacts/
+runs/
+staging/
+*.pml
+*.png
+*.log
+
+# binaries
+*.exe
+*.dll
+*.msi
+*.tar
+*.zip
+
+# machine-scale wine state
+src/
+src-mirror/
+src-pristine/
+install/
+prefix*/
+gecko/
+work-unpack/
+tests/build/
+webview2/

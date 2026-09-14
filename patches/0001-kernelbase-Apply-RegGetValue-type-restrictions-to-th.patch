@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Adobe Wine Lab <lab@adobe-wine.invalid>
+Date: Fri, 11 Sep 2026 23:32:23 +0100
+Subject: [PATCH] kernelbase: Apply RegGetValue type restrictions to the
+ returned type.
+
+---
+ dlls/advapi32/tests/registry.c | 29 +++++++++++++++++++++++++++--
+ dlls/kernelbase/registry.c     | 16 ++++------------
+ 2 files changed, 31 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/advapi32/tests/registry.c b/dlls/advapi32/tests/registry.c
+index cc9c0bff2c..8717e5f204 100644
+--- a/dlls/advapi32/tests/registry.c
++++ b/dlls/advapi32/tests/registry.c
+@@ -973,10 +973,10 @@ static void test_get_value(void)
+     ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_REG_SZ|RRF_NOEXPAND, NULL, NULL, NULL);
+     ok(ret == ERROR_UNSUPPORTED_TYPE, "ret=%ld\n", ret);
+ 
+-    /* Query REG_EXPAND_SZ using RRF_RT_REG_EXPAND_SZ (not allowed without RRF_NOEXPAND) */
++    /* Query REG_EXPAND_SZ using RRF_RT_REG_EXPAND_SZ (expanded to REG_SZ, so the restriction cannot match) */
+     ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_REG_EXPAND_SZ, NULL, NULL, NULL);
+     /* before win8: ERROR_INVALID_PARAMETER, win8: ERROR_UNSUPPORTED_TYPE */
+-    ok(ret == ERROR_INVALID_PARAMETER || ret == ERROR_UNSUPPORTED_TYPE, "ret=%ld\n", ret);
++    ok(ret == ERROR_UNSUPPORTED_TYPE || broken(ret == ERROR_INVALID_PARAMETER), "ret=%ld\n", ret);
+ 
+     /* Query REG_EXPAND_SZ using RRF_RT_ANY */
+     buf[0] = 0; type = 0xdeadbeef; size = sizeof(buf);
+@@ -986,6 +986,31 @@ static void test_get_value(void)
+         "strlen(expanded)=%d, strlen(sTestpath1)=%d, size=%ld\n", lstrlenA(expanded), lstrlenA(sTestpath1), size);
+     ok(type == REG_SZ, "type=%ld\n", type);
+     ok(!strcmp(expanded, buf), "expanded=\"%s\" buf=\"%s\"\n", expanded, buf);
++
++    /* Query REG_EXPAND_SZ using RRF_RT_REG_SZ|RRF_RT_REG_EXPAND_SZ (ok, expands to REG_SZ) */
++    buf[0] = 0; type = 0xdeadbeef; size = sizeof(buf);
++    ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_REG_SZ|RRF_RT_REG_EXPAND_SZ, &type, buf, &size);
++    ok(ret == ERROR_SUCCESS || broken(ret == ERROR_INVALID_PARAMETER) /* before win8 */, "ret=%ld\n", ret);
++    ok(type == REG_SZ, "type=%ld\n", type);
++    ok(!strcmp(expanded, buf), "expanded=\"%s\" buf=\"%s\"\n", expanded, buf);
++
++    /* Restrictions are applied to the type as returned, i.e. after expanding */
++    type = 0xdeadbeef; size = sizeof(dw); dw = 0xdeadbeef;
++    ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_REG_DWORD, &type, &dw, &size);
++    ok(ret == ERROR_UNSUPPORTED_TYPE || broken(ret == ERROR_INVALID_PARAMETER) /* before win8 */, "ret=%ld\n", ret);
++    ok(type == REG_SZ, "type=%ld\n", type);
++
++    type = 0xdeadbeef; size = sizeof(buf); buf[0] = 0;
++    ret = pRegGetValueA(hkey_main, NULL, "TP1_EXP_SZ", RRF_RT_REG_MULTI_SZ, &type, buf, &size);
++    ok(ret == ERROR_UNSUPPORTED_TYPE || broken(ret == ERROR_INVALID_PARAMETER) /* before win8 */, "ret=%ld\n", ret);
++    ok(type == REG_SZ, "type=%ld\n", type);
++
++    /* A non-string value restricted to REG_EXPAND_SZ is rejected once its type is known */
++    type = 0xdeadbeef; size = sizeof(dw); dw = 0xdeadbeef;
++    ret = pRegGetValueA(hkey_main, NULL, "DWORD", RRF_RT_REG_EXPAND_SZ, &type, &dw, &size);
++    ok(ret == ERROR_UNSUPPORTED_TYPE || broken(ret == ERROR_INVALID_PARAMETER) /* before win8 */, "ret=%ld\n", ret);
++    ok(type == REG_DWORD, "type=%ld\n", type);
++    ok(size == 4, "size=%ld\n", size);
+ } 
+ 
+ static void test_reg_open_key(void)
+diff --git a/dlls/kernelbase/registry.c b/dlls/kernelbase/registry.c
+index 7ec30c2ca7..aebe4306c7 100644
+--- a/dlls/kernelbase/registry.c
++++ b/dlls/kernelbase/registry.c
+@@ -1892,10 +1892,10 @@ static void apply_restrictions( DWORD dwFlags, DWORD dwType, DWORD cbData, PLONG
+  * NOTES
+  *  - Unless RRF_NOEXPAND is specified, REG_EXPAND_SZ values are automatically
+  *    expanded and pdwType is set to REG_SZ instead.
+- *  - Restrictions are applied after expanding, using RRF_RT_REG_EXPAND_SZ
+- *    without RRF_NOEXPAND is thus not allowed.
+- *    An exception is the case where RRF_RT_ANY is specified, because then
+- *    RRF_NOEXPAND is allowed.
++ *  - Restrictions are applied to the type as returned, i.e. after expanding a
++ *    REG_EXPAND_SZ value. Requesting RRF_RT_REG_EXPAND_SZ without RRF_NOEXPAND
++ *    therefore fails with ERROR_UNSUPPORTED_TYPE on Windows 8 and later, since
++ *    the resulting REG_SZ type does not satisfy the restriction.
+  */
+ LSTATUS WINAPI RegGetValueW( HKEY hKey, LPCWSTR pszSubKey, LPCWSTR pszValue,
+                           DWORD dwFlags, LPDWORD pdwType, PVOID pvData,
+@@ -1912,10 +1912,6 @@ LSTATUS WINAPI RegGetValueW( HKEY hKey, LPCWSTR pszSubKey, LPCWSTR pszValue,
+     if (pvData && !pcbData)
+         return ERROR_INVALID_PARAMETER;
+ 
+-    if ((dwFlags & RRF_RT_REG_EXPAND_SZ) && !(dwFlags & RRF_NOEXPAND) &&
+-            ((dwFlags & RRF_RT_ANY) != RRF_RT_ANY))
+-        return ERROR_INVALID_PARAMETER;
+-
+     if ((dwFlags & RRF_WOW64_MASK) == RRF_WOW64_MASK)
+         return ERROR_INVALID_PARAMETER;
+ 
+@@ -2027,10 +2023,6 @@ LSTATUS WINAPI RegGetValueA( HKEY hKey, LPCSTR pszSubKey, LPCSTR pszValue,
+     if (pvData && !pcbData)
+         return ERROR_INVALID_PARAMETER;
+ 
+-    if ((dwFlags & RRF_RT_REG_EXPAND_SZ) && !(dwFlags & RRF_NOEXPAND) &&
+-            ((dwFlags & RRF_RT_ANY) != RRF_RT_ANY))
+-        return ERROR_INVALID_PARAMETER;
+-
+     if ((dwFlags & RRF_WOW64_MASK) == RRF_WOW64_MASK)
+         return ERROR_INVALID_PARAMETER;
+ 
